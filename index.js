@@ -1,12 +1,13 @@
 /*
-Polaco Guardian — Discord Bot completo
-- Slash commands
-- Auto-resposta
-- CleanMakki persistente
-- Status dinâmico
-- Express + Heartbeat
-- Conexão de voz persistente
+Polaco Guardian Final - agora com CleanMakki
+Commands: /guardian, /leave, /polaco, /dk
+Voz: /guardian conecta e toca silêncio contínuo
 */
+
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const express = require('express');
 
 const {
   Client,
@@ -24,33 +25,27 @@ const {
   createAudioResource,
   AudioPlayerStatus,
   NoSubscriberBehavior,
-  setLibsodium
+  getVoiceConnection,
+  setPreferredEncryptionMode,
+  entersState,
+  VoiceConnectionStatus
 } = require('@discordjs/voice');
 
-require('dotenv').config();
-const express = require('express');
-const path = require('path');
+try {
+  setPreferredEncryptionMode('aead_xchacha20_poly1305_rtpsize');
+  console.log('[VOICE] Preferred encryption mode set');
+} catch (e) {
+  console.warn('[VOICE] Could not set preferred encryption mode:', e.message || e);
+}
 
-// ---------- LIBSODIUM SETUP ----------
-(async () => {
-  try {
-    const sodium = require('libsodium-wrappers');
-    await sodium.ready;
-    setLibsodium(sodium);
-    console.log('[VOICE] libsodium-wrappers carregado e configurado ✅');
-  } catch (err) {
-    console.error('[VOICE] Falha ao carregar libsodium-wrappers:', err);
-    try {
-      const sodiumNative = require('sodium-native');
-      setLibsodium(sodiumNative);
-      console.log('[VOICE] sodium-native carregado e configurado ✅');
-    } catch (nativeErr) {
-      console.error('[VOICE] Nenhuma lib de criptografia compatível encontrada ❌');
-    }
-  }
-})();
+const sodium = require('libsodium-wrappers');
 
-// ---------- CLIENT ----------
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const MAKKI_CHANNEL = '1300277158165614699'; // canal do Makki
+const PORT = process.env.PORT || 10000;
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -60,185 +55,89 @@ const client = new Client({
   ]
 });
 
-// ---------- EXPRESS ----------
+// Express keepalive
 const app = express();
-const port = 3000;
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.listen(port, () => console.log(`[SERVER] HTTP : http://localhost:${port} ✅`));
+app.get('/', (req, res) => res.send('Polaco Guardian is alive ✅'));
+app.listen(PORT, () => console.log(`[SERVER] Listening on port ${PORT}`));
 
-// ---------- STATUS ----------
-const statusMessages = ["Playing Battlefield 6 🔥"];
-let currentStatusIndex = 0;
-
-function updateStatus() {
-  const currentStatus = statusMessages[currentStatusIndex];
-  client.user.setPresence({
-    activities: [{ name: currentStatus, type: ActivityType.Playing }],
-    status: 'dnd'
-  });
-  console.log(`[STATUS] Updated status to: ${currentStatus} (dnd)`);
-  currentStatusIndex = (currentStatusIndex + 1) % statusMessages.length;
-}
-
-// ---------- HEARTBEAT ----------
-setInterval(() => {
-  console.log(`[HEARTBEAT] Bot is alive at ${new Date().toLocaleTimeString()}`);
-}, 30000);
-
-// ---------- SLASH COMMANDS ----------
+// ---------- Slash Commands ----------
 const commands = [
+  new SlashCommandBuilder().setName('guardian').setDescription('Conecta o bot no seu canal de voz'),
+  new SlashCommandBuilder().setName('leave').setDescription('Desconecta o bot do canal de voz'),
   new SlashCommandBuilder().setName('polaco').setDescription('Polaco Guardian está ativo! ✅'),
-  new SlashCommandBuilder().setName('dk').setDescription('Mostra informações do servidor'),
-  new SlashCommandBuilder()
-    .setName('avatar')
-    .setDescription('Mostra avatar de um usuário')
-    .addUserOption(option => option.setName('usuario').setDescription('Usuário para mostrar o avatar')),
-  new SlashCommandBuilder()
-    .setName('falar')
-    .setDescription('Bot repete a mensagem')
-    .addStringOption(option => option.setName('mensagem').setDescription('Mensagem a enviar').setRequired(true)),
-  new SlashCommandBuilder().setName('guardian').setDescription('Conecta o bot no canal de voz atual'),
-  new SlashCommandBuilder().setName('cleanmakki').setDescription('Deleta manualmente a última mensagem do Makki')
+  new SlashCommandBuilder().setName('dk').setDescription('Mostra informações do servidor')
 ].map(c => c.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 async function registerCommands() {
   try {
-    console.log('[SLASH] Registrando comandos...');
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body: commands }
-    );
-    console.log('[SLASH] Comandos registrados ✅');
+    console.log('[SLASH] Registering commands...');
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    console.log('[SLASH] Commands registered ✅');
   } catch (err) {
     console.error('[SLASH ERROR]', err);
   }
 }
 
-// ---------- LOGIN ----------
-async function login() {
-  try {
-    await client.login(process.env.TOKEN);
-    console.log(`✅ Logado como: ${client.user.tag}`);
-  } catch (err) {
-    console.error('❌ Falha ao logar:', err);
-    process.exit(1);
-  }
+// ---------- Helpers ----------
+function getSilentAudioPath() {
+  const mp3 = path.join(__dirname, 'silence.mp3');
+  const wav = path.join(__dirname, 'silence.wav');
+  if (fs.existsSync(mp3)) return mp3;
+  if (fs.existsSync(wav)) return wav;
+  throw new Error('No silence audio file found');
 }
 
-// ---------- READY ----------
-client.once('ready', async () => {
-  console.log(`[INFO] Ping: ${client.ws.ping} ms`);
-  updateStatus();
-  setInterval(updateStatus, 10000);
-  registerCommands();
+async function connectVoice(member) {
+  const channel = member.voice?.channel;
+  if (!channel) throw new Error('Você não está em um canal de voz');
 
-  const channel = client.channels.cache.get('1300277158165614699');
-  if (channel) cleanMakkiOnStartup(channel);
-});
+  const connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId: channel.guild.id,
+    adapterCreator: channel.guild.voiceAdapterCreator,
+    selfDeaf: false
+  });
 
-// ---------- INTERAÇÕES ----------
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  const { commandName } = interaction;
-
-  if (commandName === 'polaco') {
-    return interaction.reply('Polaco Guardian está ativo! ✅');
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+    console.log('[VOICE] Connection ready');
+  } catch (e) {
+    console.warn('[VOICE] Connection did not reach Ready in time:', e.message || e);
   }
 
-  if (commandName === 'dk') {
-    const guild = interaction.guild;
-    return interaction.reply(`🏰 Servidor: ${guild.name}\n👥 Membros: ${guild.memberCount}`);
+  const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
+
+  function playLoop() {
+    const resource = createAudioResource(getSilentAudioPath());
+    player.play(resource);
   }
 
-  if (commandName === 'avatar') {
-    const user = interaction.options.getUser('usuario') || interaction.user;
-    return interaction.reply({ content: `${user.tag}`, files: [user.displayAvatarURL({ dynamic: true, size: 1024 })] });
-  }
+  player.on(AudioPlayerStatus.Idle, () => setTimeout(playLoop, 250));
+  connection.subscribe(player);
+  playLoop();
 
-  if (commandName === 'falar') {
-    const mensagem = interaction.options.getString('mensagem');
-    return interaction.reply(`🗣️ Polaco diz: ${mensagem}`);
-  }
+  console.log(`[VOICE] Connected and playing in ${channel.name}`);
+  return connection;
+}
 
-  if (commandName === 'guardian') {
-    await interaction.deferReply();
-    try {
-      await connectVoice(interaction.member);
-      await interaction.editReply(`✅ Conectado em ${interaction.member.voice.channel.name} e permanecerá na call.`);
-    } catch (err) {
-      console.error('[GUARDIAN ERROR]', err);
-      await interaction.editReply('❌ Não foi possível conectar ao canal de voz.');
-    }
-  }
-
-  if (commandName === 'cleanmakki') {
-    const messages = await interaction.channel.messages.fetch({ limit: 50 });
-    const makkiMessage = messages.find(msg => msg.author.bot && isMakkiMessage(msg));
-    if (makkiMessage) {
-      await makkiMessage.delete().catch(() => {});
-      await interaction.reply('🧹 Última mensagem do Makki deletada!');
-    } else {
-      await interaction.reply('❌ Nenhuma mensagem do Makki encontrada.');
-    }
-  }
-});
-
-// ---------- AUTO-RESPOSTA DEV ----------
-const devID = '711382505558638612';
-client.on('messageCreate', async message => {
-  if (message.author.bot) return;
-  if (message.mentions.users.has(devID)) {
-    const embed = new EmbedBuilder()
-      .setColor(0x0099FF)
-      .setTitle('Olá!')
-      .setDescription(`Você citou meu dev! Se precisar de ajuda vá em <#1300277158819795013>`)
-      .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
-      .setFooter({ text: `Mensagem enviada automaticamente` });
-
-    const sent = await message.channel.send({ content: `<@${message.author.id}>`, embeds: [embed] });
-    setTimeout(() => sent.delete().catch(() => {}), 60000);
-  }
-});
-
-// ---------- CLEANMAKKI ----------
-const makkiPatterns = [
-  'Vocês gostam da nossa comunidade',
-  'DK',
-  'convide seus amigos'
-];
+// ---------- CleanMakki ----------
+const DELETE_DELAY = 1 * 60 * 60 * 1000; // 1h
+const MAKKI_PATTERNS = ['Vocês gostam da nossa comunidade','DK','convide seus amigos'];
 
 function isMakkiMessage(msg) {
-  return makkiPatterns.every(p => msg.content.includes(p));
+  return MAKKI_PATTERNS.every(p => msg.content.includes(p));
 }
-
-const DELETE_DELAY = 1 * 60 * 60 * 1000; // 1 hora
-let lastMakkiMessage = null;
 
 function scheduleMakkiDeletion(msg, delayMs) {
   const deleteTime = new Date(Date.now() + delayMs);
-  console.log(`[CLEANMAKKI] Mensagem agendada para ${deleteTime.toLocaleTimeString()}`);
-
+  console.log(`[CLEANMAKKI] Scheduled deletion at ${deleteTime.toLocaleTimeString()} | "${msg.content.slice(0,50)}..."`);
   setTimeout(() => {
-    msg.delete().catch(() => {});
+    msg.delete().catch(() => console.log('[CLEANMAKKI] Could not delete message'));
   }, delayMs);
 }
 
-// Detecta novas mensagens do Makki
-client.on('messageCreate', async message => {
-  if (message.author.bot && isMakkiMessage(message)) {
-    // Deleta a anterior se existir
-    if (lastMakkiMessage && lastMakkiMessage.id !== message.id) {
-      lastMakkiMessage.delete().catch(() => {});
-      console.log('[CLEANMAKKI] Mensagem anterior do Makki deletada.');
-    }
-    lastMakkiMessage = message;
-    scheduleMakkiDeletion(message, DELETE_DELAY);
-  }
-});
-
-// Limpa antigas ao iniciar
 async function cleanMakkiOnStartup(channel) {
   const messages = await channel.messages.fetch({ limit: 100 });
   messages.forEach(msg => {
@@ -250,32 +149,55 @@ async function cleanMakkiOnStartup(channel) {
   });
 }
 
-// ---------- VOICE ----------
-async function connectVoice(member) {
-  if (!member.voice.channel) throw new Error('Você precisa estar em um canal de voz.');
+// ---------- Event Handlers ----------
+client.once('ready', async () => {
+  console.log('[BOT] Logged in as', client.user.tag);
+  await sodium.ready;
+  console.log('[INFO] libsodium ready');
 
-  const connection = joinVoiceChannel({
-    channelId: member.voice.channel.id,
-    guildId: member.guild.id,
-    adapterCreator: member.guild.voiceAdapterCreator,
-    selfDeaf: false
-  });
+  registerCommands();
+  client.user.setPresence({ activities: [{ name:'Playing Battlefield 6 🔥', type: ActivityType.Playing }], status: 'dnd' });
 
-  const player = createAudioPlayer({
-    behaviors: { noSubscriber: NoSubscriberBehavior.Play }
-  });
+  // CleanMakki startup
+  const channel = client.channels.cache.get(MAKKI_CHANNEL);
+  if (channel) cleanMakkiOnStartup(channel);
+});
 
-  const playSilence = () => {
-    const resource = createAudioResource(path.join(__dirname, 'silence.mp3'));
-    player.play(resource);
-  };
+// Slash commands
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  const cmd = interaction.commandName;
 
-  player.on(AudioPlayerStatus.Idle, playSilence);
-  connection.subscribe(player);
-  playSilence();
+  if (cmd === 'guardian') {
+    await interaction.deferReply({ ephemeral:true }).catch(()=>{});
+    try {
+      await connectVoice(interaction.member);
+      await interaction.editReply('✅ Conectado ao canal de voz e tocando silêncio em loop.');
+    } catch (e) {
+      console.error('[GUARDIAN ERROR]', e);
+      await interaction.editReply('❌ Falha ao conectar: ' + (e.message || e));
+    }
+  } else if (cmd === 'leave') {
+    const conn = getVoiceConnection(interaction.guild.id);
+    if (conn) {
+      conn.destroy();
+      await interaction.reply('👋 Desconectado.');
+    } else {
+      await interaction.reply('❌ Não estou conectado a nenhum canal.');
+    }
+  } else if (cmd === 'polaco') {
+    await interaction.reply('Polaco Guardian está ativo! ✅');
+  } else if (cmd === 'dk') {
+    const g = interaction.guild;
+    await interaction.reply(`Servidor: ${g.name} | ID: ${g.id} | Membros: ${g.memberCount}`);
+  }
+});
 
-  console.log(`[VOICE] Conectado em ${member.voice.channel.name} e tocando silêncio contínuo.`);
-}
+// Detecta mensagens do Makki novas e agenda deleção
+client.on('messageCreate', async message => {
+  if (message.author.bot && isMakkiMessage(message)) {
+    scheduleMakkiDeletion(message, DELETE_DELAY);
+  }
+});
 
-// ---------- START ----------
-login();
+client.login(TOKEN);
