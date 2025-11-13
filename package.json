@@ -1,0 +1,18 @@
+{
+  "name": "glaceyt",
+  "version": "3.0.0",
+  "description": "dynamic status and heartbeat",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "SHIVA", 
+  "license": "MIT", 
+  "dependencies": {
+    "discord.js": "^14.16.1",
+    "@discordjs/voice": "^0.15.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.20.0",
+    "libsodium-wrappers": "^0.7.11"
+  }
+}
