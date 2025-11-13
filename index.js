@@ -123,8 +123,9 @@ async function connectVoice(member) {
 }
 
 // ---------- CleanMakki ----------
-const DELETE_DELAY = 1 * 60 * 60 * 1000; // 1h
+const DELETE_DELAY = 2 * 60 * 60 * 1000; // 2 horas
 const MAKKI_PATTERNS = ['Vocês gostam da nossa comunidade','DK','convide seus amigos'];
+let lastMakkiMessage = null; // Guarda a última mensagem do Makki
 
 function isMakkiMessage(msg) {
   return MAKKI_PATTERNS.every(p => msg.content.includes(p));
@@ -135,6 +136,7 @@ function scheduleMakkiDeletion(msg, delayMs) {
   console.log(`[CLEANMAKKI] Scheduled deletion at ${deleteTime.toLocaleTimeString()} | "${msg.content.slice(0,50)}..."`);
   setTimeout(() => {
     msg.delete().catch(() => console.log('[CLEANMAKKI] Could not delete message'));
+    if (lastMakkiMessage && lastMakkiMessage.id === msg.id) lastMakkiMessage = null; // Limpa referência
   }, delayMs);
 }
 
@@ -151,7 +153,7 @@ async function cleanMakkiOnStartup(channel) {
 
 // ---------- Event Handlers ----------
 client.once('ready', async () => {
-  console.log('[BOT] Logged in as', client.user.tag);
+  console.log('[BOT] Logged in como', client.user.tag);
   await sodium.ready;
   console.log('[INFO] libsodium ready');
 
@@ -196,6 +198,15 @@ client.on('interactionCreate', async interaction => {
 // Detecta mensagens do Makki novas e agenda deleção
 client.on('messageCreate', async message => {
   if (message.author.bot && isMakkiMessage(message)) {
+    // Deleta a mensagem anterior se existir e for diferente
+    if (lastMakkiMessage && lastMakkiMessage.id !== message.id) {
+      await lastMakkiMessage.delete().catch(() => console.log('[CLEANMAKKI] Could not delete previous Makki message'));
+    }
+
+    // Salva a nova mensagem como última
+    lastMakkiMessage = message;
+
+    // Agenda a deleção automática após o delay
     scheduleMakkiDeletion(message, DELETE_DELAY);
   }
 });
