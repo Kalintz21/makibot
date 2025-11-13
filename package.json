@@ -1,18 +1,22 @@
 {
-  "name": "glaceyt",
-  "version": "3.0.0",
-  "description": "dynamic status and heartbeat",
+  "name": "polaco-guardian",
+  "version": "3.0.1",
+  "description": "Polaco Guardian Discord Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "SHIVA", 
-  "license": "MIT", 
+  "author": "SHIVA",
+  "license": "MIT",
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "discord.js": "^14.16.1",
-    "@discordjs/voice": "^0.15.0",
+    "@discordjs/voice": "^0.16.1",
     "dotenv": "^16.4.5",
     "express": "^4.20.0",
-    "libsodium-wrappers": "^0.7.11"
+    "libsodium-wrappers": "^0.7.13",
+    "sodium-native": "^4.0.1"
   }
 }
