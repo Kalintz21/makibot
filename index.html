@@ -1,103 +1,2619 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SHIVA</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: 'Poppins', sans-serif;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background: linear-gradient(135deg, #ff007a, #ffb74d);
-            overflow: hidden;
+/*
+=========================================================
+       POLACO GUARDIAN - ENHANCED + SMART RETRY
+=========================================================
+
+Comandos:
+  /guardian
+  /guardianstatus
+  /leave
+  /polaco
+  /ping
+  /status
+  /help
+  /dk
+  /avatar
+  /userinfo
+  /falar
+  /say
+  /cleanmakki
+  /cleanmakkistatus
+
+Recursos:
+  - Voice + silêncio contínuo
+  - Reconexão de voz
+  - CleanMakki
+  - Resposta ao mencionar o desenvolvedor
+  - Diagnóstico de Render / Discord
+  - Retry automático em HTTP 429 / Cloudflare 1015
+
+=========================================================
+*/
+
+require('dotenv').config();
+
+const fs = require('fs');
+const path = require('path');
+const express = require('express');
+
+const {
+  Client,
+  Events,
+  GatewayIntentBits,
+  ActivityType,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  MessageFlags,
+  PermissionFlagsBits,
+  version: discordJsVersion
+} = require('discord.js');
+
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
+  getVoiceConnection,
+  entersState,
+  VoiceConnectionStatus
+} = require('@discordjs/voice');
+
+const sodium = require('libsodium-wrappers');
+
+// ======================================================
+// CONFIG
+// ======================================================
+
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const PORT = process.env.PORT || 10000;
+
+// Seu ID
+const DEV_USER_ID = '711382505558638612';
+
+// Makki
+const MAKKI_ID = '563434444321587202';
+const MAKKI_CHANNEL = '1300277158165614699';
+
+// CleanMakki
+const DELETE_DELAY = 2 * 60 * 60 * 1000;
+
+// Resposta à menção
+const DEV_MENTION_DELETE_DELAY =
+  5 * 60 * 1000;
+
+// Voice
+const MAX_VOICE_REJOIN_ATTEMPTS = 5;
+
+// Discord / Render Retry
+const DISCORD_RETRY_DELAY =
+  30 * 60 * 1000; // 30 minutos
+
+// ======================================================
+// GLOBAL STATUS
+// ======================================================
+
+let startupState = 'starting';
+
+let nextDiscordRetryAt = null;
+
+let lastDiscordError = null;
+
+// ======================================================
+// LOGGER
+// ======================================================
+
+function timestamp() {
+  return new Date().toLocaleString(
+    'pt-BR',
+    {
+      timeZone:
+        'America/Sao_Paulo'
+    }
+  );
+}
+
+function log(tag, message, ...extra) {
+  console.log(
+    `[${timestamp()}] [${tag}] ${message}`,
+    ...extra
+  );
+}
+
+function warn(tag, message, ...extra) {
+  console.warn(
+    `[${timestamp()}] [${tag}] ${message}`,
+    ...extra
+  );
+}
+
+function errorLog(
+  tag,
+  message,
+  ...extra
+) {
+  console.error(
+    `[${timestamp()}] [${tag}] ${message}`,
+    ...extra
+  );
+}
+
+function sleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(resolve, ms)
+  );
+}
+
+// ======================================================
+// CLIENT
+// ======================================================
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
+  ]
+});
+
+// ======================================================
+// EXPRESS / RENDER
+// ======================================================
+
+const app = express();
+
+app.get('/', (req, res) => {
+  res
+    .status(200)
+    .send(
+      'Polaco Guardian is alive ✅'
+    );
+});
+
+app.get(
+  '/health',
+  (req, res) => {
+
+    res.status(200).json({
+      status: 'ok',
+
+      startupState,
+
+      discordReady:
+        client.isReady(),
+
+      bot:
+        client.user?.tag ||
+        null,
+
+      gatewayPing:
+        client.ws.ping,
+
+      uptimeSeconds:
+        Math.floor(
+          process.uptime()
+        ),
+
+      nextDiscordRetryAt:
+        nextDiscordRetryAt
+          ? new Date(
+              nextDiscordRetryAt
+            ).toISOString()
+          : null,
+
+      lastDiscordError
+    });
+  }
+);
+
+const server =
+  app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+
+      log(
+        'SERVER',
+        `Listening on port ${PORT} ✅`
+      );
+    }
+  );
+
+// ======================================================
+// PERMISSIONS
+// ======================================================
+
+function hasAdminPermission(
+  interaction
+) {
+  const member =
+    interaction.member;
+
+  if (
+    !member?.permissions
+  ) {
+    return false;
+  }
+
+  return (
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageMessages
+    )
+  );
+}
+
+async function requireAdmin(
+  interaction
+) {
+  if (
+    hasAdminPermission(
+      interaction
+    )
+  ) {
+    return true;
+  }
+
+  const message =
+    '❌ Você precisa da permissão **Gerenciar Mensagens** ou **Administrador** para usar este comando.';
+
+  if (
+    interaction.replied ||
+    interaction.deferred
+  ) {
+
+    await interaction
+      .editReply(message)
+      .catch(() => {});
+
+  } else {
+
+    await interaction
+      .reply({
+        content: message,
+        flags:
+          MessageFlags.Ephemeral
+      })
+      .catch(() => {});
+  }
+
+  return false;
+}
+
+// ======================================================
+// COMMANDS
+// ======================================================
+
+const commands = [
+
+  new SlashCommandBuilder()
+    .setName('guardian')
+    .setDescription(
+      'Conecta o Polaco Guardian ao seu canal de voz'
+    ),
+
+  new SlashCommandBuilder()
+    .setName(
+      'guardianstatus'
+    )
+    .setDescription(
+      'Mostra o estado da conexão de voz'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('leave')
+    .setDescription(
+      'Desconecta o Polaco Guardian da call'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('polaco')
+    .setDescription(
+      'Verifica se o Polaco Guardian está ativo'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription(
+      'Mostra a latência do bot'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('status')
+    .setDescription(
+      'Mostra o status técnico do Polaco Guardian'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription(
+      'Mostra os comandos disponíveis'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('dk')
+    .setDescription(
+      'Mostra informações do servidor'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('avatar')
+    .setDescription(
+      'Mostra o avatar de um usuário'
+    )
+    .addUserOption(
+      option =>
+        option
+          .setName(
+            'usuario'
+          )
+          .setDescription(
+            'Usuário que deseja consultar'
+          )
+          .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('userinfo')
+    .setDescription(
+      'Mostra informações de um usuário'
+    )
+    .addUserOption(
+      option =>
+        option
+          .setName(
+            'usuario'
+          )
+          .setDescription(
+            'Usuário que deseja consultar'
+          )
+          .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('falar')
+    .setDescription(
+      'Faz o Guardian enviar uma mensagem'
+    )
+    .addStringOption(
+      option =>
+        option
+          .setName('texto')
+          .setDescription(
+            'Texto que será enviado'
+          )
+          .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('say')
+    .setDescription(
+      'Faz o Guardian enviar uma mensagem'
+    )
+    .addStringOption(
+      option =>
+        option
+          .setName('texto')
+          .setDescription(
+            'Texto que será enviado'
+          )
+          .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName(
+      'cleanmakki'
+    )
+    .setDescription(
+      'Remove manualmente a mensagem automática do Makki'
+    ),
+
+  new SlashCommandBuilder()
+    .setName(
+      'cleanmakkistatus'
+    )
+    .setDescription(
+      'Mostra o status do CleanMakki'
+    )
+
+].map(
+  command =>
+    command.toJSON()
+);
+
+// ======================================================
+// REGISTER COMMANDS
+// ======================================================
+
+async function registerCommands() {
+  try {
+
+    const rest =
+      new REST({
+        version: '10'
+      })
+        .setToken(TOKEN);
+
+    log(
+      'SLASH',
+      `Registering ${commands.length} commands...`
+    );
+
+    await rest.put(
+      Routes
+        .applicationGuildCommands(
+          CLIENT_ID,
+          GUILD_ID
+        ),
+      {
+        body: commands
+      }
+    );
+
+    log(
+      'SLASH',
+      `${commands.length} commands registered ✅`
+    );
+
+  } catch (err) {
+
+    errorLog(
+      'SLASH',
+      'Command registration failed',
+      err
+    );
+  }
+}
+
+// ======================================================
+// AUDIO
+// ======================================================
+
+function getSilentAudioPath() {
+
+  const mp3 =
+    path.join(
+      __dirname,
+      'silence.mp3'
+    );
+
+  const wav =
+    path.join(
+      __dirname,
+      'silence.wav'
+    );
+
+  if (
+    fs.existsSync(mp3)
+  ) {
+    return mp3;
+  }
+
+  if (
+    fs.existsSync(wav)
+  ) {
+    return wav;
+  }
+
+  throw new Error(
+    'silence.mp3 ou silence.wav não encontrado.'
+  );
+}
+
+// ======================================================
+// VOICE
+// ======================================================
+
+const voicePlayers =
+  new Map();
+
+const voiceChannels =
+  new Map();
+
+function createVoicePlayer(
+  guildId
+) {
+
+  const player =
+    createAudioPlayer({
+      behaviors: {
+        noSubscriber:
+          NoSubscriberBehavior.Play
+      }
+    });
+
+  player.on(
+    'error',
+    err => {
+
+      errorLog(
+        'VOICE',
+        `Audio player error | Guild ${guildId}`,
+        err
+      );
+    }
+  );
+
+  function playSilence() {
+    try {
+
+      const file =
+        getSilentAudioPath();
+
+      const resource =
+        createAudioResource(
+          file
+        );
+
+      player.play(
+        resource
+      );
+
+    } catch (err) {
+
+      errorLog(
+        'VOICE',
+        'Could not start silence',
+        err
+      );
+    }
+  }
+
+  player.on(
+    AudioPlayerStatus.Idle,
+    () => {
+
+      setTimeout(
+        playSilence,
+        500
+      );
+    }
+  );
+
+  player.on(
+    AudioPlayerStatus.Playing,
+    () => {
+
+      log(
+        'VOICE',
+        `Silent audio playing | Guild ${guildId} ✅`
+      );
+    }
+  );
+
+  playSilence();
+
+  return player;
+}
+
+// ======================================================
+// VOICE RECONNECT
+// ======================================================
+
+function configureVoiceReconnect(
+  connection,
+  guildId
+) {
+
+  let reconnecting =
+    false;
+
+  connection.on(
+    'stateChange',
+    async (
+      oldState,
+      newState
+    ) => {
+
+      log(
+        'VOICE',
+        `${guildId}: ${oldState.status} -> ${newState.status}`
+      );
+
+      if (
+        newState.status ===
+        VoiceConnectionStatus.Ready
+      ) {
+
+        reconnecting =
+          false;
+
+        return;
+      }
+
+      if (
+        newState.status !==
+        VoiceConnectionStatus.Disconnected
+      ) {
+        return;
+      }
+
+      if (
+        reconnecting
+      ) {
+        return;
+      }
+
+      reconnecting =
+        true;
+
+      warn(
+        'VOICE',
+        `Disconnected | Guild ${guildId}`
+      );
+
+      try {
+
+        await Promise.race([
+          entersState(
+            connection,
+            VoiceConnectionStatus.Signalling,
+            5000
+          ),
+
+          entersState(
+            connection,
+            VoiceConnectionStatus.Connecting,
+            5000
+          )
+        ]);
+
+        reconnecting =
+          false;
+
+        return;
+
+      } catch {}
+
+      if (
+        connection.rejoinAttempts >=
+        MAX_VOICE_REJOIN_ATTEMPTS
+      ) {
+
+        errorLog(
+          'VOICE',
+          `Maximum rejoin attempts reached | Guild ${guildId}`
+        );
+
+        reconnecting =
+          false;
+
+        return;
+      }
+
+      const attempt =
+        connection
+          .rejoinAttempts +
+        1;
+
+      const delay =
+        Math.min(
+          5000 * attempt,
+          30000
+        );
+
+      warn(
+        'VOICE',
+        `Rejoin attempt ${attempt}/${MAX_VOICE_REJOIN_ATTEMPTS} in ${delay / 1000}s`
+      );
+
+      setTimeout(
+        () => {
+
+          try {
+
+            connection.rejoin();
+
+            log(
+              'VOICE',
+              `Rejoin requested | Guild ${guildId}`
+            );
+
+          } catch (err) {
+
+            errorLog(
+              'VOICE',
+              'Rejoin failed',
+              err
+            );
+          }
+
+          reconnecting =
+            false;
+
+        },
+        delay
+      );
+    }
+  );
+
+  connection.on(
+    'error',
+    err => {
+
+      errorLog(
+        'VOICE',
+        `Connection error | Guild ${guildId}`,
+        err
+      );
+    }
+  );
+}
+
+// ======================================================
+// CONNECT VOICE
+// ======================================================
+
+async function connectVoice(
+  member
+) {
+
+  const channel =
+    member.voice?.channel;
+
+  if (!channel) {
+
+    throw new Error(
+      'Você precisa estar em um canal de voz.'
+    );
+  }
+
+  const guildId =
+    channel.guild.id;
+
+  const existing =
+    getVoiceConnection(
+      guildId
+    );
+
+  if (existing) {
+
+    try {
+      existing.destroy();
+    } catch {}
+
+    voicePlayers.delete(
+      guildId
+    );
+
+    voiceChannels.delete(
+      guildId
+    );
+
+    await sleep(500);
+  }
+
+  log(
+    'VOICE',
+    `Connecting to "${channel.name}"...`
+  );
+
+  const connection =
+    joinVoiceChannel({
+
+      channelId:
+        channel.id,
+
+      guildId,
+
+      adapterCreator:
+        channel.guild
+          .voiceAdapterCreator,
+
+      selfDeaf: false,
+
+      selfMute: false
+    });
+
+  configureVoiceReconnect(
+    connection,
+    guildId
+  );
+
+  try {
+
+    await entersState(
+      connection,
+      VoiceConnectionStatus.Ready,
+      30000
+    );
+
+  } catch {
+
+    try {
+      connection.destroy();
+    } catch {}
+
+    throw new Error(
+      'A conexão de voz não ficou pronta em 30 segundos.'
+    );
+  }
+
+  const player =
+    createVoicePlayer(
+      guildId
+    );
+
+  connection.subscribe(
+    player
+  );
+
+  voicePlayers.set(
+    guildId,
+    player
+  );
+
+  voiceChannels.set(
+    guildId,
+    {
+      id: channel.id,
+      name: channel.name,
+      connectedAt:
+        Date.now()
+    }
+  );
+
+  log(
+    'VOICE',
+    `Connected to "${channel.name}" ✅`
+  );
+
+  return connection;
+}
+
+// ======================================================
+// CLEAN MAKKI
+// ======================================================
+
+const makkiTimers =
+  new Map();
+
+let lastMakkiMessage =
+  null;
+
+function getMakkiMessageText(
+  message
+) {
+
+  let text =
+    message.content || '';
+
+  for (
+    const embed
+    of message.embeds
+  ) {
+
+    text +=
+      ` ${embed.title || ''}`;
+
+    text +=
+      ` ${embed.description || ''}`;
+
+    if (
+      embed.fields
+    ) {
+
+      for (
+        const field
+        of embed.fields
+      ) {
+
+        text +=
+          ` ${field.name || ''}`;
+
+        text +=
+          ` ${field.value || ''}`;
+      }
+    }
+
+    text +=
+      ` ${embed.footer?.text || ''}`;
+  }
+
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(
+      /[\u0300-\u036f]/g,
+      ''
+    );
+}
+
+function isMakkiMessage(
+  message
+) {
+
+  if (
+    message.author?.id !==
+    MAKKI_ID
+  ) {
+    return false;
+  }
+
+  if (
+    message.channel?.id !==
+    MAKKI_CHANNEL
+  ) {
+    return false;
+  }
+
+  const text =
+    getMakkiMessageText(
+      message
+    );
+
+  const patterns = [
+    'voces gostam da nossa comunidade',
+    'convide seus amigos',
+    'tag dk',
+    "tag 'dk'",
+    'tag "dk"',
+    'tag “dk”'
+  ];
+
+  return patterns.some(
+    pattern =>
+      text.includes(
+        pattern
+      )
+  );
+}
+
+async function deleteMakkiMessage(
+  message,
+  reason
+) {
+
+  if (
+    message.author?.id !==
+    MAKKI_ID
+  ) {
+    return false;
+  }
+
+  try {
+
+    await message.delete();
+
+    const timerData =
+      makkiTimers.get(
+        message.id
+      );
+
+    if (
+      timerData?.timer
+    ) {
+
+      clearTimeout(
+        timerData.timer
+      );
+    }
+
+    makkiTimers.delete(
+      message.id
+    );
+
+    if (
+      lastMakkiMessage?.id ===
+      message.id
+    ) {
+
+      lastMakkiMessage =
+        null;
+    }
+
+    log(
+      'CLEANMAKKI',
+      `Deleted ${message.id} | ${reason} ✅`
+    );
+
+    return true;
+
+  } catch (err) {
+
+    if (
+      err?.code ===
+      10008
+    ) {
+
+      makkiTimers.delete(
+        message.id
+      );
+
+      return true;
+    }
+
+    errorLog(
+      'CLEANMAKKI',
+      'Delete failed',
+      err
+    );
+
+    return false;
+  }
+}
+
+function scheduleMakkiDeletion(
+  message,
+  delay
+) {
+
+  if (
+    makkiTimers.has(
+      message.id
+    )
+  ) {
+    return;
+  }
+
+  const deleteAt =
+    Date.now() + delay;
+
+  const timer =
+    setTimeout(
+      async () => {
+
+        await deleteMakkiMessage(
+          message,
+          'timer'
+        );
+
+      },
+      delay
+    );
+
+  makkiTimers.set(
+    message.id,
+    {
+      timer,
+      deleteAt,
+      message
+    }
+  );
+
+  log(
+    'CLEANMAKKI',
+    `Scheduled ${message.id} for ${new Date(
+      deleteAt
+    ).toLocaleString(
+      'pt-BR',
+      {
+        timeZone:
+          'America/Sao_Paulo'
+      }
+    )}`
+  );
+}
+
+async function cleanMakkiOnStartup(
+  channel
+) {
+
+  try {
+
+    log(
+      'CLEANMAKKI',
+      'Startup scan...'
+    );
+
+    const messages =
+      await channel
+        .messages
+        .fetch({
+          limit: 100
+        });
+
+    const matches =
+      messages
+        .filter(
+          isMakkiMessage
+        )
+        .sort(
+          (a, b) =>
+            b.createdTimestamp -
+            a.createdTimestamp
+        );
+
+    log(
+      'CLEANMAKKI',
+      `Found ${matches.size} matching message(s).`
+    );
+
+    let newest = null;
+
+    for (
+      const message
+      of matches.values()
+    ) {
+
+      if (!newest) {
+        newest =
+          message;
+      }
+
+      const age =
+        Date.now() -
+        message.createdTimestamp;
+
+      const remaining =
+        DELETE_DELAY -
+        age;
+
+      if (
+        remaining <= 0
+      ) {
+
+        await deleteMakkiMessage(
+          message,
+          'startup expired'
+        );
+
+      } else {
+
+        scheduleMakkiDeletion(
+          message,
+          remaining
+        );
+      }
+    }
+
+    lastMakkiMessage =
+      newest;
+
+  } catch (err) {
+
+    errorLog(
+      'CLEANMAKKI',
+      'Startup scan error',
+      err
+    );
+  }
+}
+
+async function manualCleanMakki() {
+
+  const channel =
+    await client
+      .channels
+      .fetch(
+        MAKKI_CHANNEL
+      );
+
+  if (
+    !channel ||
+    !channel.isTextBased()
+  ) {
+
+    return {
+      success: false,
+      message:
+        'Canal do Makki não encontrado.'
+    };
+  }
+
+  const messages =
+    await channel
+      .messages
+      .fetch({
+        limit: 100
+      });
+
+  const latest =
+    messages
+      .filter(
+        isMakkiMessage
+      )
+      .sort(
+        (a, b) =>
+          b.createdTimestamp -
+          a.createdTimestamp
+      )
+      .first();
+
+  if (!latest) {
+
+    return {
+      success: false,
+      message:
+        'Nenhuma mensagem automática encontrada.'
+    };
+  }
+
+  const success =
+    await deleteMakkiMessage(
+      latest,
+      'manual'
+    );
+
+  return {
+    success,
+    messageId:
+      latest.id
+  };
+}
+
+// ======================================================
+// DEV MENTION
+// ======================================================
+
+async function handleDeveloperMention(
+  message
+) {
+
+  if (
+    message.author.bot
+  ) {
+    return;
+  }
+
+  if (
+    !message
+      .mentions
+      .users
+      .has(
+        DEV_USER_ID
+      )
+  ) {
+    return;
+  }
+
+  try {
+
+    const reply =
+      await message.reply({
+
+        content:
+          `Olá ${message.author}, vejo que você mencionou meu desenvolvedor. ` +
+          `Se precisar de ajuda, procure o canal de atendimento do servidor.`,
+
+        allowedMentions: {
+          repliedUser:
+            false,
+
+          users: [
+            message
+              .author
+              .id
+          ]
         }
-        .container {
-            text-align: center;
-            color: white;
+      });
+
+    log(
+      'DEVMENTION',
+      `Response sent to ${message.author.tag} ✅`
+    );
+
+    setTimeout(
+      async () => {
+
+        await reply
+          .delete()
+          .catch(
+            () => {}
+          );
+
+      },
+      DEV_MENTION_DELETE_DELAY
+    );
+
+  } catch (err) {
+
+    errorLog(
+      'DEVMENTION',
+      'Could not respond',
+      err
+    );
+  }
+}
+
+// ======================================================
+// READY
+// ======================================================
+
+client.once(
+  Events.ClientReady,
+  async readyClient => {
+
+    startupState =
+      'online';
+
+    nextDiscordRetryAt =
+      null;
+
+    lastDiscordError =
+      null;
+
+    log(
+      'BOT',
+      `Logged in as ${readyClient.user.tag} ✅`
+    );
+
+    await registerCommands();
+
+    readyClient.user
+      .setPresence({
+
+        activities: [
+          {
+            name:
+              'Battlefield 6 🔥',
+
+            type:
+              ActivityType.Playing
+          }
+        ],
+
+        status:
+          'dnd'
+      });
+
+    log(
+      'BOT',
+      'Presence configured ✅'
+    );
+
+    try {
+
+      const channel =
+        await readyClient
+          .channels
+          .fetch(
+            MAKKI_CHANNEL
+          );
+
+      if (
+        channel &&
+        channel
+          .isTextBased()
+      ) {
+
+        await cleanMakkiOnStartup(
+          channel
+        );
+      }
+
+    } catch (err) {
+
+      errorLog(
+        'CLEANMAKKI',
+        'Channel fetch failed',
+        err
+      );
+    }
+
+    log(
+      'DEVMENTION',
+      `Developer mention active | ${DEV_USER_ID} ✅`
+    );
+  }
+);
+
+// ======================================================
+// INTERACTIONS
+// ======================================================
+
+client.on(
+  Events.InteractionCreate,
+  async interaction => {
+
+    if (
+      !interaction
+        .isChatInputCommand()
+    ) {
+      return;
+    }
+
+    const command =
+      interaction.commandName;
+
+    log(
+      'CMD',
+      `/${command} by ${interaction.user.tag}`
+    );
+
+    try {
+
+      // /guardian
+
+      if (
+        command ===
+        'guardian'
+      ) {
+
+        await interaction
+          .deferReply({
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+        try {
+
+          await connectVoice(
+            interaction.member
+          );
+
+          await interaction
+            .editReply(
+              '✅ Polaco Guardian conectado à sua call.'
+            );
+
+        } catch (err) {
+
+          await interaction
+            .editReply(
+              `❌ Falha ao conectar: \`${err.message || err}\``
+            );
         }
-        .main-heading, .sub-heading {
-            font-size: 4rem;
-            margin: 0;
-            position: relative;
-            animation: glitch 1.5s infinite;
+
+        return;
+      }
+
+      // /guardianstatus
+
+      if (
+        command ===
+        'guardianstatus'
+      ) {
+
+        const connection =
+          getVoiceConnection(
+            interaction.guild.id
+          );
+
+        if (!connection) {
+
+          await interaction
+            .reply(
+              '🔇 O Guardian não está conectado a nenhuma call.'
+            );
+
+          return;
         }
-        .main-heading {
-            font-size: 5rem;
+
+        const info =
+          voiceChannels.get(
+            interaction.guild.id
+          );
+
+        const uptime =
+          info?.connectedAt
+            ? formatDuration(
+                Date.now() -
+                info.connectedAt
+              )
+            : 'desconhecido';
+
+        await interaction.reply(
+          `🎧 **Guardian Voice Status**\n` +
+          `Canal: **${info?.name || 'desconhecido'}**\n` +
+          `Estado: **${connection.state.status}**\n` +
+          `Conectado há: **${uptime}**\n` +
+          `Voice WS: **${connection.ping?.ws ?? 'N/A'}ms**\n` +
+          `Voice UDP: **${connection.ping?.udp ?? 'N/A'}ms**\n` +
+          `Rejoin attempts: **${connection.rejoinAttempts}**`
+        );
+
+        return;
+      }
+
+      // /leave
+
+      if (
+        command ===
+        'leave'
+      ) {
+
+        if (
+          !(await requireAdmin(
+            interaction
+          ))
+        ) {
+          return;
         }
-        .sub-heading {
-            font-size: 2rem;
-            margin-top: 10px;
+
+        const connection =
+          getVoiceConnection(
+            interaction.guild.id
+          );
+
+        if (!connection) {
+
+          await interaction.reply({
+            content:
+              '❌ Não estou conectado à call.',
+
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+          return;
         }
-        .icons {
-            margin-top: 20px;
+
+        connection.destroy();
+
+        const player =
+          voicePlayers.get(
+            interaction.guild.id
+          );
+
+        if (player) {
+
+          try {
+            player.stop(true);
+          } catch {}
         }
-        .icons a {
-            color: white;
-            margin: 0 15px;
-            font-size: 2rem;
-            text-decoration: none;
-            transition: color 0.3s;
+
+        voicePlayers.delete(
+          interaction.guild.id
+        );
+
+        voiceChannels.delete(
+          interaction.guild.id
+        );
+
+        await interaction.reply({
+          content:
+            '👋 Desconectado da call.',
+
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        return;
+      }
+
+      // /polaco
+
+      if (
+        command ===
+        'polaco'
+      ) {
+
+        await interaction.reply(
+          'Polaco Guardian está ativo! ✅'
+        );
+
+        return;
+      }
+
+      // /ping
+
+      if (
+        command ===
+        'ping'
+      ) {
+
+        const started =
+          Date.now();
+
+        await interaction.reply(
+          '🏓 Calculando...'
+        );
+
+        const responsePing =
+          Date.now() -
+          started;
+
+        await interaction.editReply(
+          `🏓 **Pong!**\n` +
+          `🤖 Bot: **${responsePing}ms**\n` +
+          `🌐 Gateway: **${Math.round(client.ws.ping)}ms**`
+        );
+
+        return;
+      }
+
+      // /status
+
+      if (
+        command ===
+        'status'
+      ) {
+
+        const memory =
+          process.memoryUsage();
+
+        const heap =
+          (
+            memory.heapUsed /
+            1024 /
+            1024
+          ).toFixed(1);
+
+        const rss =
+          (
+            memory.rss /
+            1024 /
+            1024
+          ).toFixed(1);
+
+        const voice =
+          getVoiceConnection(
+            interaction.guild.id
+          );
+
+        await interaction.reply(
+          `🤖 **Polaco Guardian Status**\n\n` +
+          `🟢 Discord: **${client.isReady() ? 'Online' : 'Offline'}**\n` +
+          `⚙️ Startup: **${startupState}**\n` +
+          `⏱️ Uptime: **${formatDuration(process.uptime() * 1000)}**\n` +
+          `🌐 Gateway: **${Math.round(client.ws.ping)}ms**\n` +
+          `🎧 Voz: **${voice ? voice.state.status : 'desconectado'}**\n` +
+          `🧠 Heap: **${heap} MB**\n` +
+          `💾 RSS: **${rss} MB**\n` +
+          `🟩 Node: **${process.version}**\n` +
+          `📦 discord.js: **${discordJsVersion}**\n` +
+          `🧹 CleanMakki: **${makkiTimers.size} timer(s)**`
+        );
+
+        return;
+      }
+
+      // /help
+
+      if (
+        command ===
+        'help'
+      ) {
+
+        await interaction.reply(
+          `🤖 **Polaco Guardian — Comandos**\n\n` +
+
+          `**Públicos**\n` +
+          `\`/polaco\`\n` +
+          `\`/ping\`\n` +
+          `\`/status\`\n` +
+          `\`/dk\`\n` +
+          `\`/avatar\`\n` +
+          `\`/userinfo\`\n\n` +
+
+          `**Voz**\n` +
+          `\`/guardian\`\n` +
+          `\`/guardianstatus\`\n` +
+          `\`/leave\`\n\n` +
+
+          `**Admin**\n` +
+          `\`/falar\`\n` +
+          `\`/say\`\n` +
+          `\`/cleanmakki\`\n` +
+          `\`/cleanmakkistatus\``
+        );
+
+        return;
+      }
+
+      // /dk
+
+      if (
+        command ===
+        'dk'
+      ) {
+
+        const guild =
+          interaction.guild;
+
+        await interaction.reply(
+          `🏰 **${guild.name}**\n` +
+          `👥 Membros: **${guild.memberCount}**\n` +
+          `🆔 ID: \`${guild.id}\`\n` +
+          `👑 Dono: <@${guild.ownerId}>`
+        );
+
+        return;
+      }
+
+      // /avatar
+
+      if (
+        command ===
+        'avatar'
+      ) {
+
+        const user =
+          interaction
+            .options
+            .getUser(
+              'usuario'
+            ) ||
+          interaction.user;
+
+        const avatar =
+          user
+            .displayAvatarURL({
+              size: 1024,
+              extension:
+                'png'
+            });
+
+        await interaction.reply(
+          `🖼️ **Avatar de ${user.username}:**\n${avatar}`
+        );
+
+        return;
+      }
+
+      // /userinfo
+
+      if (
+        command ===
+        'userinfo'
+      ) {
+
+        const user =
+          interaction
+            .options
+            .getUser(
+              'usuario'
+            ) ||
+          interaction.user;
+
+        let member =
+          null;
+
+        try {
+
+          member =
+            await interaction
+              .guild
+              .members
+              .fetch(
+                user.id
+              );
+
+        } catch {}
+
+        const created =
+          Math.floor(
+            user.createdTimestamp /
+            1000
+          );
+
+        let text =
+          `👤 **${user.username}**\n` +
+          `🆔 ID: \`${user.id}\`\n` +
+          `🤖 Bot: **${user.bot ? 'Sim' : 'Não'}**\n` +
+          `📅 Criada: <t:${created}:F>`;
+
+        if (
+          member
+            ?.joinedTimestamp
+        ) {
+
+          text +=
+            `\n📥 Entrou: <t:${Math.floor(member.joinedTimestamp / 1000)}:F>`;
         }
-        .icons a:hover {
-            color: #ffb74d;
+
+        await interaction.reply(
+          text
+        );
+
+        return;
+      }
+
+      // /falar /say
+
+      if (
+        command ===
+        'falar' ||
+        command ===
+        'say'
+      ) {
+
+        if (
+          !(await requireAdmin(
+            interaction
+          ))
+        ) {
+          return;
         }
-        @keyframes glitch {
-            0% {
-                transform: translate(0);
-                text-shadow: 1px 1px 0 #fff, -1px -1px 0 #ff007a;
+
+        const text =
+          interaction
+            .options
+            .getString(
+              'texto'
+            ) ??
+          interaction
+            .options
+            .getString(
+              'mensagem'
+            ) ??
+          interaction
+            .options
+            .getString(
+              'message'
+            );
+
+        if (!text) {
+
+          await interaction.reply({
+            content:
+              '❌ Nenhum texto informado.',
+
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+          return;
+        }
+
+        await interaction.reply({
+          content:
+            '✅ Mensagem enviada.',
+
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        await interaction
+          .channel
+          .send({
+            content: text,
+
+            allowedMentions: {
+              parse: []
             }
-            20% {
-                transform: translate(-5px, 5px);
-                text-shadow: 2px 2px 0 #ff007a, -2px -2px 0 #ffb74d;
-            }
-            40% {
-                transform: translate(5px, -5px);
-                text-shadow: 1px 1px 0 #ffb74d, -1px -1px 0 #ff007a;
-            }
-            60% {
-                transform: translate(-5px, -5px);
-                text-shadow: 2px 2px 0 #fff, -2px -2px 0 #ff007a;
-            }
-            80% {
-                transform: translate(5px, 5px);
-                text-shadow: 1px 1px 0 #ff007a, -1px -1px 0 #ffb74d;
-            }
-            100% {
-                transform: translate(0);
-                text-shadow: 1px 1px 0 #fff, -1px -1px 0 #ff007a;
-            }
+          });
+
+        return;
+      }
+
+      // /cleanmakki
+
+      if (
+        command ===
+        'cleanmakki'
+      ) {
+
+        if (
+          !(await requireAdmin(
+            interaction
+          ))
+        ) {
+          return;
         }
-        @media (max-width: 768px) {
-            .main-heading {
-                font-size: 3rem;
-            }
-            .sub-heading {
-                font-size: 1rem;
-            }
-            .icons a {
-                font-size: 1.5rem;
-            }
+
+        await interaction
+          .deferReply({
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+        const result =
+          await manualCleanMakki();
+
+        if (
+          result.success
+        ) {
+
+          await interaction
+            .editReply(
+              `✅ Mensagem removida.\nID: \`${result.messageId}\``
+            );
+
+        } else {
+
+          await interaction
+            .editReply(
+              `ℹ️ ${result.message}`
+            );
         }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="main-heading">SHIVA</div>
-        <div class="sub-heading">GlaceYT</div>
-        <div class="icons">
-            <a href="https://discord.com/invite/xQF9f9yUEM" target="_blank" title="Discord"><i class="fab fa-discord"></i></a>
-            <a href="https://www.youtube.com/@GlaceYT" target="_blank" title="YouTube"><i class="fab fa-youtube"></i></a>
-            <a href="https://github.com/GlaceYT" target="_blank" title="GitHub"><i class="fab fa-github"></i></a>
-        </div>
-    </div>
-</body>
-</html>
-                 
+
+        return;
+      }
+
+      // /cleanmakkistatus
+
+      if (
+        command ===
+        'cleanmakkistatus'
+      ) {
+
+        if (
+          makkiTimers.size ===
+          0
+        ) {
+
+          await interaction.reply(
+            '🧹 Nenhuma mensagem do Makki agendada.'
+          );
+
+          return;
+        }
+
+        const rows = [];
+
+        for (
+          const [
+            id,
+            data
+          ]
+          of makkiTimers
+        ) {
+
+          const remaining =
+            Math.max(
+              data.deleteAt -
+              Date.now(),
+              0
+            );
+
+          rows.push(
+            `• \`${id}\` — **${formatDuration(remaining)}**`
+          );
+        }
+
+        await interaction.reply(
+          `🧹 **CleanMakki Status**\n\n${rows.join('\n')}`
+        );
+
+        return;
+      }
+
+    } catch (err) {
+
+      errorLog(
+        'COMMAND',
+        `/${command} failed`,
+        err
+      );
+
+      const text =
+        `❌ Erro ao executar **/${command}**.\n\`${err.message || err}\``;
+
+      if (
+        interaction.replied ||
+        interaction.deferred
+      ) {
+
+        await interaction
+          .editReply(text)
+          .catch(() => {});
+
+      } else {
+
+        await interaction
+          .reply({
+            content: text,
+            flags:
+              MessageFlags.Ephemeral
+          })
+          .catch(() => {});
+      }
+    }
+  }
+);
+
+// ======================================================
+// MESSAGE CREATE
+// ======================================================
+
+client.on(
+  Events.MessageCreate,
+  async message => {
+
+    await handleDeveloperMention(
+      message
+    );
+
+    if (
+      message.channel.id !==
+      MAKKI_CHANNEL
+    ) {
+      return;
+    }
+
+    if (
+      !isMakkiMessage(
+        message
+      )
+    ) {
+      return;
+    }
+
+    lastMakkiMessage =
+      message;
+
+    scheduleMakkiDeletion(
+      message,
+      DELETE_DELAY
+    );
+  }
+);
+
+// ======================================================
+// HELPERS
+// ======================================================
+
+function formatDuration(
+  ms
+) {
+
+  const totalSeconds =
+    Math.max(
+      0,
+      Math.floor(
+        ms / 1000
+      )
+    );
+
+  const days =
+    Math.floor(
+      totalSeconds /
+      86400
+    );
+
+  const hours =
+    Math.floor(
+      (
+        totalSeconds %
+        86400
+      ) /
+      3600
+    );
+
+  const minutes =
+    Math.floor(
+      (
+        totalSeconds %
+        3600
+      ) /
+      60
+    );
+
+  const seconds =
+    totalSeconds %
+    60;
+
+  const parts = [];
+
+  if (days) {
+    parts.push(
+      `${days}d`
+    );
+  }
+
+  if (hours) {
+    parts.push(
+      `${hours}h`
+    );
+  }
+
+  if (minutes) {
+    parts.push(
+      `${minutes}m`
+    );
+  }
+
+  if (
+    seconds ||
+    parts.length ===
+      0
+  ) {
+
+    parts.push(
+      `${seconds}s`
+    );
+  }
+
+  return parts.join(' ');
+}
+
+// ======================================================
+// DISCORD PREFLIGHT
+// ======================================================
+
+async function discordPreflight() {
+
+  log(
+    'STARTUP',
+    'Testing Discord REST API...'
+  );
+
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      15000
+    );
+
+  try {
+
+    const response =
+      await fetch(
+        'https://discord.com/api/v10/users/@me',
+        {
+          headers: {
+            Authorization:
+              `Bot ${TOKEN}`
+          },
+
+          signal:
+            controller.signal
+        }
+      );
+
+    log(
+      'STARTUP',
+      `Discord REST HTTP ${response.status}`
+    );
+
+    if (
+      response.status ===
+      429
+    ) {
+
+      const body =
+        await response.text();
+
+      const err =
+        new Error(
+          body.includes(
+            '1015'
+          ) ||
+          body.includes(
+            'temporarily'
+          )
+            ? 'Discord/Cloudflare bloqueou temporariamente o IP do Render (HTTP 429 / Error 1015).'
+            : 'Discord respondeu HTTP 429.'
+        );
+
+      err.code =
+        'DISCORD_RATE_LIMIT';
+
+      throw err;
+    }
+
+    if (
+      response.status ===
+      401
+    ) {
+
+      const err =
+        new Error(
+          'TOKEN inválido ou expirado.'
+        );
+
+      err.code =
+        'INVALID_TOKEN';
+
+      throw err;
+    }
+
+    if (!response.ok) {
+
+      throw new Error(
+        `Discord REST retornou HTTP ${response.status}.`
+      );
+    }
+
+    const bot =
+      await response.json();
+
+    if (
+      String(bot.id) !==
+      String(CLIENT_ID)
+    ) {
+
+      throw new Error(
+        'CLIENT_ID não corresponde ao TOKEN.'
+      );
+    }
+
+    log(
+      'STARTUP',
+      `Authenticated as ${bot.username} (${bot.id}) ✅`
+    );
+
+    return true;
+
+  } finally {
+
+    clearTimeout(
+      timer
+    );
+  }
+}
+
+// ======================================================
+// SMART DISCORD STARTUP
+// ======================================================
+
+async function connectDiscordWithRetry() {
+
+  while (
+    !client.isReady()
+  ) {
+
+    try {
+
+      startupState =
+        'checking-discord';
+
+      nextDiscordRetryAt =
+        null;
+
+      lastDiscordError =
+        null;
+
+      await discordPreflight();
+
+      startupState =
+        'connecting-gateway';
+
+      log(
+        'STARTUP',
+        'Connecting to Discord Gateway...'
+      );
+
+      const LOGIN_TIMEOUT =
+        45000;
+
+      let timeoutId;
+
+      const timeoutPromise =
+        new Promise(
+          (_, reject) => {
+
+            timeoutId =
+              setTimeout(
+                () => {
+
+                  reject(
+                    new Error(
+                      'Discord Gateway login timeout after 45 seconds.'
+                    )
+                  );
+
+                },
+                LOGIN_TIMEOUT
+              );
+          }
+        );
+
+      await Promise.race([
+        client.login(TOKEN),
+        timeoutPromise
+      ]);
+
+      clearTimeout(
+        timeoutId
+      );
+
+      startupState =
+        'online';
+
+      log(
+        'STARTUP',
+        'Discord login completed ✅'
+      );
+
+      return;
+
+    } catch (err) {
+
+      lastDiscordError =
+        err.message ||
+        String(err);
+
+      // --------------------------------------
+      // 429 / Cloudflare 1015
+      // --------------------------------------
+
+      if (
+        err.code ===
+        'DISCORD_RATE_LIMIT'
+      ) {
+
+        startupState =
+          'waiting-rate-limit';
+
+        nextDiscordRetryAt =
+          Date.now() +
+          DISCORD_RETRY_DELAY;
+
+        warn(
+          'STARTUP',
+          lastDiscordError
+        );
+
+        warn(
+          'STARTUP',
+          `Guardian continuará vivo no Render e tentará novamente em ${DISCORD_RETRY_DELAY / 60000} minutos.`
+        );
+
+        warn(
+          'STARTUP',
+          `Próxima tentativa: ${new Date(
+            nextDiscordRetryAt
+          ).toLocaleString(
+            'pt-BR',
+            {
+              timeZone:
+                'America/Sao_Paulo'
+            }
+          )}`
+        );
+
+        await sleep(
+          DISCORD_RETRY_DELAY
+        );
+
+        continue;
+      }
+
+      // --------------------------------------
+      // Token inválido
+      // Não adianta repetir automaticamente.
+      // --------------------------------------
+
+      if (
+        err.code ===
+        'INVALID_TOKEN'
+      ) {
+
+        startupState =
+          'invalid-token';
+
+        errorLog(
+          'STARTUP',
+          lastDiscordError
+        );
+
+        return;
+      }
+
+      // --------------------------------------
+      // Erro desconhecido:
+      // espera 5 minutos em vez de crashar.
+      // --------------------------------------
+
+      startupState =
+        'waiting-error';
+
+      const fallbackDelay =
+        5 * 60 * 1000;
+
+      nextDiscordRetryAt =
+        Date.now() +
+        fallbackDelay;
+
+      errorLog(
+        'STARTUP',
+        lastDiscordError
+      );
+
+      warn(
+        'STARTUP',
+        'Tentando novamente em 5 minutos...'
+      );
+
+      // Limpa estado parcial do login
+      try {
+
+        if (
+          !client.isReady()
+        ) {
+
+          client.ws.destroy?.();
+        }
+
+      } catch {}
+
+      await sleep(
+        fallbackDelay
+      );
+    }
+  }
+}
+
+// ======================================================
+// DISCORD ERRORS
+// ======================================================
+
+client.on(
+  'error',
+  err => {
+
+    errorLog(
+      'DISCORD',
+      'Client error',
+      err
+    );
+  }
+);
+
+client.on(
+  'warn',
+  warning => {
+
+    warn(
+      'DISCORD',
+      warning
+    );
+  }
+);
+
+process.on(
+  'unhandledRejection',
+  err => {
+
+    errorLog(
+      'PROCESS',
+      'Unhandled rejection',
+      err
+    );
+  }
+);
+
+process.on(
+  'uncaughtException',
+  err => {
+
+    errorLog(
+      'PROCESS',
+      'Uncaught exception',
+      err
+    );
+  }
+);
+
+// ======================================================
+// SHUTDOWN
+// ======================================================
+
+function shutdown(
+  signal
+) {
+
+  log(
+    'SYSTEM',
+    `${signal} received. Shutting down...`
+  );
+
+  for (
+    const data
+    of makkiTimers.values()
+  ) {
+
+    if (
+      data?.timer
+    ) {
+
+      clearTimeout(
+        data.timer
+      );
+    }
+  }
+
+  for (
+    const player
+    of voicePlayers.values()
+  ) {
+
+    try {
+      player.stop(true);
+    } catch {}
+  }
+
+  try {
+    client.destroy();
+  } catch {}
+
+  try {
+    server.close();
+  } catch {}
+
+  setTimeout(
+    () =>
+      process.exit(0),
+    500
+  );
+}
+
+process.on(
+  'SIGTERM',
+  () =>
+    shutdown(
+      'SIGTERM'
+    )
+);
+
+process.on(
+  'SIGINT',
+  () =>
+    shutdown(
+      'SIGINT'
+    )
+);
+
+// ======================================================
+// START
+// ======================================================
+
+async function startBot() {
+
+  console.log('');
+  console.log(
+    '======================================'
+  );
+
+  console.log(
+    '       POLACO GUARDIAN STARTING'
+  );
+
+  console.log(
+    '======================================'
+  );
+
+  if (!TOKEN) {
+
+    errorLog(
+      'STARTUP',
+      'TOKEN não configurado.'
+    );
+
+    return;
+  }
+
+  if (!CLIENT_ID) {
+
+    errorLog(
+      'STARTUP',
+      'CLIENT_ID não configurado.'
+    );
+
+    return;
+  }
+
+  if (!GUILD_ID) {
+
+    errorLog(
+      'STARTUP',
+      'GUILD_ID não configurado.'
+    );
+
+    return;
+  }
+
+  log(
+    'STARTUP',
+    'Environment variables OK ✅'
+  );
+
+  log(
+    'STARTUP',
+    `CLIENT_ID: ${CLIENT_ID}`
+  );
+
+  log(
+    'STARTUP',
+    `GUILD_ID: ${GUILD_ID}`
+  );
+
+  log(
+    'STARTUP',
+    'Initializing libsodium...'
+  );
+
+  await sodium.ready;
+
+  log(
+    'STARTUP',
+    'libsodium ready ✅'
+  );
+
+  await connectDiscordWithRetry();
+}
+
+startBot();
