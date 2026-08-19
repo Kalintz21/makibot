@@ -1,7 +1,7 @@
 /*
-Polaco Guardian - 2026
+Polaco Guardian - Diagnóstico de conexão 2026
 Commands: /guardian, /leave, /polaco, /dk
-Voz: /guardian conecta e toca silêncio continuamente
+Voz: /guardian conecta e toca silêncio contínuo
 CleanMakki: remove mensagens após 2 horas
 */
 
@@ -59,12 +59,10 @@ const client = new Client({
 });
 
 // ======================================================
-// DISCORD DEBUG / GATEWAY LOGS
+// DISCORD / GATEWAY LOGS
 // ======================================================
 
-client.on('debug', info => {
-  console.log('[DISCORD DEBUG]', info);
-});
+// NÃO usamos client.on('debug') porque ele pode imprimir token nos logs.
 
 client.on('warn', warning => {
   console.warn('[DISCORD WARNING]', warning);
@@ -151,34 +149,24 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 const commands = [
   new SlashCommandBuilder()
     .setName('guardian')
-    .setDescription(
-      'Conecta o Polaco Guardian ao seu canal de voz'
-    ),
+    .setDescription('Conecta o Polaco Guardian ao seu canal de voz'),
 
   new SlashCommandBuilder()
     .setName('leave')
-    .setDescription(
-      'Desconecta o Polaco Guardian do canal de voz'
-    ),
+    .setDescription('Desconecta o Polaco Guardian do canal de voz'),
 
   new SlashCommandBuilder()
     .setName('polaco')
-    .setDescription(
-      'Verifica se o Polaco Guardian está ativo'
-    ),
+    .setDescription('Verifica se o Polaco Guardian está ativo'),
 
   new SlashCommandBuilder()
     .setName('dk')
-    .setDescription(
-      'Mostra informações do servidor'
-    )
+    .setDescription('Mostra informações do servidor')
 ].map(command => command.toJSON());
 
 async function registerCommands() {
   try {
-    console.log(
-      '[SLASH] Registering commands...'
-    );
+    console.log('[SLASH] Registering commands...');
 
     const rest = new REST({
       version: '10'
@@ -251,7 +239,6 @@ async function connectVoice(member) {
     `[VOICE] Connecting to "${channel.name}" (${channel.id})...`
   );
 
-  // Destrói uma eventual conexão antiga
   const existingConnection =
     getVoiceConnection(channel.guild.id);
 
@@ -266,10 +253,7 @@ async function connectVoice(member) {
   const connection = joinVoiceChannel({
     channelId: channel.id,
     guildId: channel.guild.id,
-
-    adapterCreator:
-      channel.guild.voiceAdapterCreator,
-
+    adapterCreator: channel.guild.voiceAdapterCreator,
     selfDeaf: false,
     selfMute: false
   });
@@ -277,7 +261,6 @@ async function connectVoice(member) {
   connection.on(
     'stateChange',
     (oldState, newState) => {
-
       console.log(
         `[VOICE STATE] ${oldState.status} -> ${newState.status}`
       );
@@ -291,7 +274,6 @@ async function connectVoice(member) {
     );
   });
 
-  // Espera a conexão efetivamente ficar pronta
   try {
     await entersState(
       connection,
@@ -357,7 +339,6 @@ async function connectVoice(member) {
   player.on(
     AudioPlayerStatus.Playing,
     () => {
-
       console.log(
         '[VOICE] Silent audio playing ✅'
       );
@@ -367,7 +348,6 @@ async function connectVoice(member) {
   player.on(
     AudioPlayerStatus.Idle,
     () => {
-
       setTimeout(() => {
         playLoop();
       }, 500);
@@ -375,7 +355,6 @@ async function connectVoice(member) {
   );
 
   connection.subscribe(player);
-
   playLoop();
 
   console.log(
@@ -391,8 +370,6 @@ async function connectVoice(member) {
 
 const DELETE_DELAY =
   2 * 60 * 60 * 1000;
-
-// 2 horas
 
 const MAKKI_PATTERNS = [
   'Vocês gostam da nossa comunidade',
@@ -414,7 +391,7 @@ function isMakkiMessage(message) {
 }
 
 // ======================================================
-// SCHEDULE DELETION
+// CLEAN MAKKI - SCHEDULE
 // ======================================================
 
 function scheduleMakkiDeletion(
@@ -441,12 +418,8 @@ function scheduleMakkiDeletion(
   );
 
   setTimeout(async () => {
-
     try {
-
-      if (!message.deleted) {
-        await message.delete();
-      }
+      await message.delete();
 
       console.log(
         `[CLEANMAKKI] Message deleted ✅ | ID: ${message.id}`
@@ -460,8 +433,6 @@ function scheduleMakkiDeletion(
       }
 
     } catch (error) {
-
-      // Unknown Message = já foi apagada
       if (error?.code === 10008) {
         console.log(
           `[CLEANMAKKI] Message ${message.id} was already deleted.`
@@ -475,7 +446,6 @@ function scheduleMakkiDeletion(
         error.message || error
       );
     }
-
   }, delayMs);
 }
 
@@ -515,8 +485,6 @@ async function cleanMakkiOnStartup(
     let first = true;
 
     for (const message of makkiMessages.values()) {
-
-      // Guarda a mensagem mais recente
       if (first) {
         lastMakkiMessage = message;
         first = false;
@@ -555,7 +523,6 @@ async function cleanMakkiOnStartup(
 // ======================================================
 
 client.once('ready', async readyClient => {
-
   console.log('');
   console.log(
     '======================================'
@@ -578,18 +545,9 @@ client.once('ready', async readyClient => {
   );
   console.log('');
 
-  // ------------------------------------
-  // Slash Commands
-  // ------------------------------------
-
   await registerCommands();
 
-  // ------------------------------------
-  // Presence
-  // ------------------------------------
-
   try {
-
     readyClient.user.setPresence({
       activities: [
         {
@@ -605,19 +563,13 @@ client.once('ready', async readyClient => {
     );
 
   } catch (error) {
-
     console.error(
       '[PRESENCE ERROR]',
       error
     );
   }
 
-  // ------------------------------------
-  // CleanMakki Startup
-  // ------------------------------------
-
   try {
-
     const channel =
       await readyClient.channels.fetch(
         MAKKI_CHANNEL
@@ -627,7 +579,6 @@ client.once('ready', async readyClient => {
       channel &&
       channel.isTextBased()
     ) {
-
       console.log(
         `[CLEANMAKKI] Channel found: ${channel.name} ✅`
       );
@@ -637,14 +588,12 @@ client.once('ready', async readyClient => {
       );
 
     } else {
-
       console.warn(
         '[CLEANMAKKI] Configured channel is not text based.'
       );
     }
 
   } catch (error) {
-
     console.error(
       '[CLEANMAKKI] Channel fetch failed:',
       error.message || error
@@ -669,14 +618,9 @@ client.on(
     const command =
       interaction.commandName;
 
-    // ==================================================
     // /guardian
-    // ==================================================
-
     if (command === 'guardian') {
-
       try {
-
         await interaction.deferReply({
           ephemeral: true
         });
@@ -690,7 +634,6 @@ client.on(
         );
 
       } catch (error) {
-
         console.error(
           '[GUARDIAN ERROR]',
           error
@@ -705,13 +648,10 @@ client.on(
           interaction.deferred ||
           interaction.replied
         ) {
-
           await interaction
             .editReply(message)
             .catch(() => {});
-
         } else {
-
           await interaction
             .reply({
               content: message,
@@ -724,19 +664,14 @@ client.on(
       return;
     }
 
-    // ==================================================
     // /leave
-    // ==================================================
-
     if (command === 'leave') {
-
       const connection =
         getVoiceConnection(
           interaction.guild.id
         );
 
       if (connection) {
-
         connection.destroy();
 
         console.log(
@@ -750,7 +685,6 @@ client.on(
         });
 
       } else {
-
         await interaction.reply({
           content:
             '❌ Não estou conectado a nenhum canal de voz.',
@@ -761,12 +695,8 @@ client.on(
       return;
     }
 
-    // ==================================================
     // /polaco
-    // ==================================================
-
     if (command === 'polaco') {
-
       await interaction.reply(
         'Polaco Guardian está ativo! ✅'
       );
@@ -774,12 +704,8 @@ client.on(
       return;
     }
 
-    // ==================================================
     // /dk
-    // ==================================================
-
     if (command === 'dk') {
-
       const guild =
         interaction.guild;
 
@@ -800,7 +726,6 @@ client.on(
   'messageCreate',
   async message => {
 
-    // Somente o canal configurado
     if (
       message.channel.id !==
       MAKKI_CHANNEL
@@ -819,18 +744,12 @@ client.on(
       `[CLEANMAKKI] New Makki message detected ✅ | ID: ${message.id}`
     );
 
-    // ------------------------------------
-    // Remove mensagem anterior
-    // ------------------------------------
-
     if (
       lastMakkiMessage &&
       lastMakkiMessage.id !==
         message.id
     ) {
-
       try {
-
         await lastMakkiMessage.delete();
 
         console.log(
@@ -838,7 +757,6 @@ client.on(
         );
 
       } catch (error) {
-
         if (error?.code !== 10008) {
           console.error(
             '[CLEANMAKKI] Could not delete previous message:',
@@ -848,11 +766,9 @@ client.on(
       }
     }
 
-    // Salva a atual
     lastMakkiMessage =
       message;
 
-    // Agenda exclusão em duas horas
     scheduleMakkiDeletion(
       message,
       DELETE_DELAY
@@ -867,7 +783,6 @@ client.on(
 process.on(
   'unhandledRejection',
   error => {
-
     console.error(
       '[UNHANDLED REJECTION]',
       error
@@ -878,7 +793,6 @@ process.on(
 process.on(
   'uncaughtException',
   error => {
-
     console.error(
       '[UNCAUGHT EXCEPTION]',
       error
@@ -891,7 +805,6 @@ process.on(
 // ======================================================
 
 function shutdown(signal) {
-
   console.log(
     `[SYSTEM] ${signal} received. Shutting down...`
   );
@@ -918,13 +831,128 @@ process.on(
 );
 
 // ======================================================
+// DISCORD REST TEST
+// ======================================================
+
+async function testDiscordRest() {
+  console.log(
+    '[STARTUP] Testing Discord REST authentication...'
+  );
+
+  const response = await fetch(
+    'https://discord.com/api/v10/users/@me',
+    {
+      headers: {
+        Authorization: `Bot ${TOKEN}`
+      }
+    }
+  );
+
+  console.log(
+    `[REST TEST] HTTP ${response.status}`
+  );
+
+  if (!response.ok) {
+    const body =
+      await response.text();
+
+    console.error(
+      '[REST TEST] Discord response:',
+      body
+    );
+
+    throw new Error(
+      `Discord authentication failed: HTTP ${response.status}`
+    );
+  }
+
+  const botInfo =
+    await response.json();
+
+  console.log(
+    `[REST TEST] Authenticated as ${botInfo.username} (${botInfo.id}) ✅`
+  );
+
+  if (
+    String(botInfo.id) !==
+    String(CLIENT_ID)
+  ) {
+    console.warn(
+      '[REST TEST WARNING] CLIENT_ID does not match the bot token!'
+    );
+
+    console.warn(
+      `[REST TEST WARNING] TOKEN bot ID: ${botInfo.id}`
+    );
+
+    console.warn(
+      `[REST TEST WARNING] CLIENT_ID: ${CLIENT_ID}`
+    );
+  } else {
+    console.log(
+      '[REST TEST] TOKEN and CLIENT_ID match ✅'
+    );
+  }
+}
+
+// ======================================================
+// DISCORD GATEWAY REST TEST
+// ======================================================
+
+async function testDiscordGatewayEndpoint() {
+  console.log(
+    '[STARTUP] Testing Discord Gateway endpoint...'
+  );
+
+  const response = await fetch(
+    'https://discord.com/api/v10/gateway/bot',
+    {
+      headers: {
+        Authorization: `Bot ${TOKEN}`
+      }
+    }
+  );
+
+  console.log(
+    `[GATEWAY TEST] HTTP ${response.status}`
+  );
+
+  if (!response.ok) {
+    const body =
+      await response.text();
+
+    console.error(
+      '[GATEWAY TEST] Discord response:',
+      body
+    );
+
+    throw new Error(
+      `Discord Gateway endpoint failed: HTTP ${response.status}`
+    );
+  }
+
+  const gatewayInfo =
+    await response.json();
+
+  console.log(
+    `[GATEWAY TEST] URL: ${gatewayInfo.url}`
+  );
+
+  console.log(
+    `[GATEWAY TEST] Recommended shards: ${gatewayInfo.shards}`
+  );
+
+  console.log(
+    '[GATEWAY TEST] Gateway information received ✅'
+  );
+}
+
+// ======================================================
 // START BOT
 // ======================================================
 
 async function startBot() {
-
   try {
-
     console.log('');
     console.log(
       '======================================'
@@ -991,34 +1019,43 @@ async function startBot() {
     );
 
     // ==================================================
-    // LOGIN
+    // TEST 1 - DISCORD REST
+    // ==================================================
+
+    await testDiscordRest();
+
+    // ==================================================
+    // TEST 2 - GATEWAY REST ENDPOINT
+    // ==================================================
+
+    await testDiscordGatewayEndpoint();
+
+    // ==================================================
+    // LOGIN / WEBSOCKET
     // ==================================================
 
     console.log(
-      '[STARTUP] Connecting to Discord...'
+      '[STARTUP] Opening Discord Gateway/WebSocket connection...'
     );
 
-    const LOGIN_TIMEOUT = 30_000;
+    const LOGIN_TIMEOUT =
+      45_000;
 
     let timeoutId;
 
     const timeoutPromise =
       new Promise((_, reject) => {
-
         timeoutId =
           setTimeout(() => {
-
             reject(
               new Error(
-                `Discord login timeout after ${LOGIN_TIMEOUT / 1000} seconds`
+                `Discord Gateway login timeout after ${LOGIN_TIMEOUT / 1000} seconds`
               )
             );
-
           }, LOGIN_TIMEOUT);
       });
 
     try {
-
       const loginResult =
         await Promise.race([
           client.login(TOKEN),
@@ -1036,14 +1073,11 @@ async function startBot() {
       );
 
     } catch (error) {
-
       clearTimeout(timeoutId);
-
       throw error;
     }
 
   } catch (error) {
-
     console.error('');
     console.error(
       '======================================'
@@ -1062,10 +1096,6 @@ async function startBot() {
     try {
       client.destroy();
     } catch {}
-
-    // O servidor Express permanece por alguns
-    // segundos para o Render conseguir registrar
-    // todo o erro antes de encerrar.
 
     setTimeout(() => {
       process.exit(1);
