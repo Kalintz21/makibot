@@ -1,8 +1,31 @@
 /*
-Polaco Guardian - Diagnóstico de conexão 2026
-Commands: /guardian, /leave, /polaco, /dk
-Voz: /guardian conecta e toca silêncio contínuo
-CleanMakki: remove mensagens após 2 horas
+=========================================================
+               POLACO GUARDIAN - FINAL
+=========================================================
+
+Comandos:
+  /guardian
+  /leave
+  /polaco
+  /ping
+  /dk
+  /avatar
+  /userinfo
+  /falar
+  /say
+  /cleanmakki
+
+Voice:
+  /guardian conecta ao canal do usuário
+  Toca silence.mp3 / silence.wav continuamente
+
+CleanMakki:
+  Detecta SOMENTE o Makki pelo ID
+  Canal específico
+  Remove mensagem automática após 2 horas
+  /cleanmakki permite remoção manual
+
+=========================================================
 */
 
 require('dotenv').config();
@@ -17,7 +40,8 @@ const {
   ActivityType,
   REST,
   Routes,
-  SlashCommandBuilder
+  SlashCommandBuilder,
+  MessageFlags
 } = require('discord.js');
 
 const {
@@ -34,7 +58,7 @@ const {
 const sodium = require('libsodium-wrappers');
 
 // ======================================================
-// ENVIRONMENT VARIABLES
+// CONFIG
 // ======================================================
 
 const TOKEN = process.env.TOKEN;
@@ -42,11 +66,15 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = process.env.PORT || 10000;
 
-// Canal onde o Makki envia a mensagem
+// Makki
+const MAKKI_ID = '563434444321587202';
 const MAKKI_CHANNEL = '1300277158165614699';
 
+// 2 horas
+const DELETE_DELAY = 2 * 60 * 60 * 1000;
+
 // ======================================================
-// DISCORD CLIENT
+// CLIENT
 // ======================================================
 
 const client = new Client({
@@ -59,17 +87,15 @@ const client = new Client({
 });
 
 // ======================================================
-// DISCORD / GATEWAY LOGS
+// DISCORD / SHARD LOGS
 // ======================================================
-
-// NÃO usamos client.on('debug') porque ele pode imprimir token nos logs.
 
 client.on('warn', warning => {
   console.warn('[DISCORD WARNING]', warning);
 });
 
 client.on('error', error => {
-  console.error('[DISCORD CLIENT ERROR]', error);
+  console.error('[DISCORD ERROR]', error);
 });
 
 client.on('shardError', (error, shardId) => {
@@ -89,11 +115,9 @@ client.on('shardDisconnect', (event, shardId) => {
   );
 
   console.error(
-    `[SHARD DISCONNECT] Reason: ${event.reason || 'sem motivo informado'}`
-  );
-
-  console.error(
-    `[SHARD DISCONNECT] Clean: ${event.wasClean}`
+    `[SHARD DISCONNECT] Reason: ${
+      event.reason || 'sem motivo'
+    }`
   );
 });
 
@@ -105,7 +129,7 @@ client.on('shardReconnecting', shardId => {
 
 client.on('shardResume', (shardId, replayedEvents) => {
   console.log(
-    `[SHARD] Resumed shard ${shardId} | ${replayedEvents} replayed event(s) ✅`
+    `[SHARD] Shard ${shardId} resumed | ${replayedEvents} replayed event(s) ✅`
   );
 });
 
@@ -132,41 +156,133 @@ app.get('/health', (req, res) => {
     status: 'ok',
     discordReady: client.isReady(),
     bot: client.user?.tag || null,
+    ping: client.ws.ping,
     uptime: Math.floor(process.uptime())
   });
 });
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(
-    `[SERVER] Listening on port ${PORT} ✅`
-  );
-});
+const server = app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log(
+      `[SERVER] Listening on port ${PORT} ✅`
+    );
+  }
+);
 
 // ======================================================
 // SLASH COMMANDS
 // ======================================================
 
 const commands = [
+
   new SlashCommandBuilder()
     .setName('guardian')
-    .setDescription('Conecta o Polaco Guardian ao seu canal de voz'),
+    .setDescription(
+      'Conecta o Polaco Guardian ao seu canal de voz'
+    ),
 
   new SlashCommandBuilder()
     .setName('leave')
-    .setDescription('Desconecta o Polaco Guardian do canal de voz'),
+    .setDescription(
+      'Desconecta o Polaco Guardian do canal de voz'
+    ),
 
   new SlashCommandBuilder()
     .setName('polaco')
-    .setDescription('Verifica se o Polaco Guardian está ativo'),
+    .setDescription(
+      'Verifica se o Polaco Guardian está ativo'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription(
+      'Mostra a latência do Polaco Guardian'
+    ),
 
   new SlashCommandBuilder()
     .setName('dk')
-    .setDescription('Mostra informações do servidor')
+    .setDescription(
+      'Mostra informações do servidor'
+    ),
+
+  new SlashCommandBuilder()
+    .setName('avatar')
+    .setDescription(
+      'Mostra o avatar de um usuário'
+    )
+    .addUserOption(option =>
+      option
+        .setName('usuario')
+        .setDescription(
+          'Usuário que deseja visualizar'
+        )
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('userinfo')
+    .setDescription(
+      'Mostra informações de um usuário'
+    )
+    .addUserOption(option =>
+      option
+        .setName('usuario')
+        .setDescription(
+          'Usuário que deseja consultar'
+        )
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('falar')
+    .setDescription(
+      'Faz o Polaco Guardian enviar uma mensagem'
+    )
+    .addStringOption(option =>
+      option
+        .setName('texto')
+        .setDescription(
+          'Texto que o bot deverá enviar'
+        )
+        .setRequired(true)
+    ),
+
+  // Alias do /falar
+  new SlashCommandBuilder()
+    .setName('say')
+    .setDescription(
+      'Faz o Polaco Guardian enviar uma mensagem'
+    )
+    .addStringOption(option =>
+      option
+        .setName('texto')
+        .setDescription(
+          'Texto que o bot deverá enviar'
+        )
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('cleanmakki')
+    .setDescription(
+      'Remove manualmente a última mensagem automática do Makki'
+    )
+
 ].map(command => command.toJSON());
 
+// ======================================================
+// REGISTER COMMANDS
+// ======================================================
+
 async function registerCommands() {
+
   try {
-    console.log('[SLASH] Registering commands...');
+
+    console.log(
+      `[SLASH] Registering ${commands.length} commands...`
+    );
 
     const rest = new REST({
       version: '10'
@@ -183,10 +299,11 @@ async function registerCommands() {
     );
 
     console.log(
-      '[SLASH] Commands registered ✅'
+      `[SLASH] ${commands.length} commands registered ✅`
     );
 
   } catch (error) {
+
     console.error(
       '[SLASH ERROR]',
       error
@@ -195,19 +312,16 @@ async function registerCommands() {
 }
 
 // ======================================================
-// SILENT AUDIO
+// SILENCE FILE
 // ======================================================
 
 function getSilentAudioPath() {
-  const mp3 = path.join(
-    __dirname,
-    'silence.mp3'
-  );
 
-  const wav = path.join(
-    __dirname,
-    'silence.wav'
-  );
+  const mp3 =
+    path.join(__dirname, 'silence.mp3');
+
+  const wav =
+    path.join(__dirname, 'silence.wav');
 
   if (fs.existsSync(mp3)) {
     return mp3;
@@ -218,76 +332,129 @@ function getSilentAudioPath() {
   }
 
   throw new Error(
-    'Arquivo silence.mp3 ou silence.wav não encontrado.'
+    'silence.mp3 ou silence.wav não encontrado no projeto.'
   );
 }
 
 // ======================================================
-// VOICE CONNECTION
+// VOICE
 // ======================================================
 
 async function connectVoice(member) {
-  const channel = member.voice?.channel;
+
+  const channel =
+    member.voice?.channel;
 
   if (!channel) {
     throw new Error(
-      'Você não está em um canal de voz.'
+      'Você precisa estar em um canal de voz.'
     );
   }
 
+  console.log('');
   console.log(
-    `[VOICE] Connecting to "${channel.name}" (${channel.id})...`
+    `[VOICE] Requested channel: ${channel.name}`
   );
 
-  const existingConnection =
+  console.log(
+    `[VOICE] Channel ID: ${channel.id}`
+  );
+
+  console.log(
+    `[VOICE] Guild: ${channel.guild.name}`
+  );
+
+  // --------------------------------------
+  // Destroy old connection
+  // --------------------------------------
+
+  const oldConnection =
     getVoiceConnection(channel.guild.id);
 
-  if (existingConnection) {
+  if (oldConnection) {
+
     console.log(
-      '[VOICE] Existing connection found. Destroying...'
+      '[VOICE] Destroying previous connection...'
     );
 
-    existingConnection.destroy();
+    try {
+      oldConnection.destroy();
+    } catch {}
+
+    // Pequena pausa
+    await new Promise(
+      resolve => setTimeout(resolve, 500)
+    );
   }
 
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: false
-  });
+  // --------------------------------------
+  // Join
+  // --------------------------------------
+
+  console.log(
+    '[VOICE] Creating voice connection...'
+  );
+
+  const connection =
+    joinVoiceChannel({
+
+      channelId: channel.id,
+
+      guildId: channel.guild.id,
+
+      adapterCreator:
+        channel.guild.voiceAdapterCreator,
+
+      selfDeaf: false,
+
+      selfMute: false
+    });
+
+  // --------------------------------------
+  // Logs
+  // --------------------------------------
 
   connection.on(
     'stateChange',
     (oldState, newState) => {
+
       console.log(
         `[VOICE STATE] ${oldState.status} -> ${newState.status}`
       );
     }
   );
 
-  connection.on('error', error => {
-    console.error(
-      '[VOICE CONNECTION ERROR]',
-      error
-    );
-  });
+  connection.on(
+    'error',
+    error => {
+
+      console.error(
+        '[VOICE CONNECTION ERROR]',
+        error
+      );
+    }
+  );
+
+  // --------------------------------------
+  // Wait Ready
+  // --------------------------------------
+
+  console.log(
+    '[VOICE] Waiting for Ready state...'
+  );
 
   try {
+
     await entersState(
       connection,
       VoiceConnectionStatus.Ready,
       30_000
     );
 
-    console.log(
-      '[VOICE] Connection ready ✅'
-    );
-
   } catch (error) {
+
     console.error(
-      '[VOICE] Failed to reach Ready:',
+      '[VOICE] Could not reach Ready state:',
       error
     );
 
@@ -296,69 +463,93 @@ async function connectVoice(member) {
     } catch {}
 
     throw new Error(
-      'Não foi possível estabelecer a conexão de voz.'
+      'A conexão de voz não ficou pronta em 30 segundos.'
     );
   }
 
-  // ====================================================
-  // AUDIO PLAYER
-  // ====================================================
+  console.log(
+    '[VOICE] Connection Ready ✅'
+  );
 
-  const player = createAudioPlayer({
-    behaviors: {
-      noSubscriber:
-        NoSubscriberBehavior.Play
-    }
-  });
+  // --------------------------------------
+  // Player
+  // --------------------------------------
 
-  player.on('error', error => {
-    console.error(
-      '[AUDIO ERROR]',
-      error
-    );
-  });
+  const player =
+    createAudioPlayer({
 
-  function playLoop() {
-    try {
-      const silentFile =
-        getSilentAudioPath();
+      behaviors: {
 
-      const resource =
-        createAudioResource(silentFile);
+        noSubscriber:
+          NoSubscriberBehavior.Play
+      }
+    });
 
-      player.play(resource);
+  player.on(
+    'error',
+    error => {
 
-    } catch (error) {
       console.error(
-        '[VOICE] Could not start silent audio:',
-        error.message || error
+        '[AUDIO ERROR]',
+        error
       );
     }
-  }
+  );
 
   player.on(
     AudioPlayerStatus.Playing,
     () => {
+
       console.log(
         '[VOICE] Silent audio playing ✅'
       );
     }
   );
 
+  function playSilence() {
+
+    try {
+
+      const silenceFile =
+        getSilentAudioPath();
+
+      const resource =
+        createAudioResource(
+          silenceFile
+        );
+
+      player.play(resource);
+
+    } catch (error) {
+
+      console.error(
+        '[VOICE AUDIO ERROR]',
+        error.message || error
+      );
+    }
+  }
+
+  // --------------------------------------
+  // Infinite silence loop
+  // --------------------------------------
+
   player.on(
     AudioPlayerStatus.Idle,
     () => {
-      setTimeout(() => {
-        playLoop();
-      }, 500);
+
+      setTimeout(
+        playSilence,
+        500
+      );
     }
   );
 
   connection.subscribe(player);
-  playLoop();
+
+  playSilence();
 
   console.log(
-    `[VOICE] Connected to "${channel.name}" ✅`
+    `[VOICE] Connected to ${channel.name} ✅`
   );
 
   return connection;
@@ -368,85 +559,252 @@ async function connectVoice(member) {
 // CLEAN MAKKI
 // ======================================================
 
-const DELETE_DELAY =
-  2 * 60 * 60 * 1000;
-
-const MAKKI_PATTERNS = [
-  'Vocês gostam da nossa comunidade',
-  'DK',
-  'convide seus amigos'
-];
-
 let lastMakkiMessage = null;
 
+const makkiTimers = new Map();
+
+// ======================================================
+// MESSAGE TEXT / EMBEDS
+// ======================================================
+
+function getMakkiMessageText(message) {
+
+  let text =
+    message.content || '';
+
+  for (const embed of message.embeds) {
+
+    if (embed.title) {
+      text += ` ${embed.title}`;
+    }
+
+    if (embed.description) {
+      text += ` ${embed.description}`;
+    }
+
+    if (embed.fields?.length) {
+
+      for (const field of embed.fields) {
+
+        text +=
+          ` ${field.name || ''} ${
+            field.value || ''
+          }`;
+      }
+    }
+
+    if (embed.footer?.text) {
+      text +=
+        ` ${embed.footer.text}`;
+    }
+  }
+
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(
+      /[\u0300-\u036f]/g,
+      ''
+    );
+}
+
+// ======================================================
+// IDENTIFY MAKKI AUTOMATIC MESSAGE
+// ======================================================
+
 function isMakkiMessage(message) {
-  if (!message?.content) {
+
+  if (!message) {
     return false;
   }
 
-  return MAKKI_PATTERNS.every(
+  // ID EXATO DO MAKKI
+  if (
+    message.author?.id !==
+    MAKKI_ID
+  ) {
+    return false;
+  }
+
+  // Canal exato
+  if (
+    message.channel?.id !==
+    MAKKI_CHANNEL
+  ) {
+    return false;
+  }
+
+  const text =
+    getMakkiMessageText(message);
+
+  if (!text.trim()) {
+    return false;
+  }
+
+  /*
+  A mensagem automática histórica contém
+  características como:
+
+  "Vocês gostam da nossa comunidade"
+  "convide seus amigos"
+  "TAG DK"
+
+  Basta encontrar UMA característica forte,
+  pois o autor já foi confirmado pelo ID.
+  */
+
+  const patterns = [
+    'voces gostam da nossa comunidade',
+    'convide seus amigos',
+    "tag 'dk'",
+    'tag "dk"',
+    'tag “dk”',
+    'tag dk'
+  ];
+
+  return patterns.some(
     pattern =>
-      message.content.includes(pattern)
+      text.includes(pattern)
   );
 }
 
 // ======================================================
-// CLEAN MAKKI - SCHEDULE
+// DELETE MAKKI
+// ======================================================
+
+async function deleteMakkiMessage(
+  message,
+  reason = 'timer'
+) {
+
+  if (!message) {
+    return false;
+  }
+
+  // Segurança extra
+  if (
+    message.author?.id !== MAKKI_ID
+  ) {
+
+    console.log(
+      '[CLEANMAKKI] Delete cancelled: author is not Makki.'
+    );
+
+    return false;
+  }
+
+  try {
+
+    await message.delete();
+
+    console.log(
+      `[CLEANMAKKI] Message deleted ✅ | ${message.id} | Reason: ${reason}`
+    );
+
+    const timer =
+      makkiTimers.get(message.id);
+
+    if (timer) {
+
+      clearTimeout(timer);
+
+      makkiTimers.delete(
+        message.id
+      );
+    }
+
+    if (
+      lastMakkiMessage?.id ===
+      message.id
+    ) {
+
+      lastMakkiMessage = null;
+    }
+
+    return true;
+
+  } catch (error) {
+
+    // Discord: Unknown Message
+    if (error?.code === 10008) {
+
+      console.log(
+        `[CLEANMAKKI] Message ${message.id} already deleted.`
+      );
+
+      makkiTimers.delete(
+        message.id
+      );
+
+      return true;
+    }
+
+    console.error(
+      `[CLEANMAKKI] Failed deleting ${message.id}:`,
+      error.message || error
+    );
+
+    return false;
+  }
+}
+
+// ======================================================
+// SCHEDULE MAKKI DELETE
 // ======================================================
 
 function scheduleMakkiDeletion(
   message,
-  delayMs
+  delay
 ) {
-  const deleteTime =
-    new Date(Date.now() + delayMs);
+
+  // Evita timer duplicado
+  if (
+    makkiTimers.has(message.id)
+  ) {
+    return;
+  }
+
+  const deleteAt =
+    Date.now() + delay;
+
+  const deleteDate =
+    new Date(deleteAt);
 
   console.log(
-    `[CLEANMAKKI] Scheduled deletion: ${deleteTime.toLocaleString(
+    `[CLEANMAKKI] Scheduled ✅ | ID: ${message.id}`
+  );
+
+  console.log(
+    `[CLEANMAKKI] Delete at: ${deleteDate.toLocaleString(
       'pt-BR',
       {
-        timeZone: 'America/Sao_Paulo'
+        timeZone:
+          'America/Sao_Paulo'
       }
     )}`
   );
 
-  console.log(
-    `[CLEANMAKKI] Message: "${message.content.slice(
-      0,
-      70
-    )}..."`
-  );
+  const timer =
+    setTimeout(
+      async () => {
 
-  setTimeout(async () => {
-    try {
-      await message.delete();
-
-      console.log(
-        `[CLEANMAKKI] Message deleted ✅ | ID: ${message.id}`
-      );
-
-      if (
-        lastMakkiMessage?.id ===
-        message.id
-      ) {
-        lastMakkiMessage = null;
-      }
-
-    } catch (error) {
-      if (error?.code === 10008) {
-        console.log(
-          `[CLEANMAKKI] Message ${message.id} was already deleted.`
+        makkiTimers.delete(
+          message.id
         );
 
-        return;
-      }
+        await deleteMakkiMessage(
+          message,
+          '2 hour timer'
+        );
 
-      console.error(
-        `[CLEANMAKKI] Could not delete ${message.id}:`,
-        error.message || error
-      );
-    }
-  }, delayMs);
+      },
+      delay
+    );
+
+  makkiTimers.set(
+    message.id,
+    timer
+  );
 }
 
 // ======================================================
@@ -456,22 +814,22 @@ function scheduleMakkiDeletion(
 async function cleanMakkiOnStartup(
   channel
 ) {
+
+  console.log('');
+  console.log(
+    '[CLEANMAKKI] Startup scan...'
+  );
+
   try {
-    console.log(
-      '[CLEANMAKKI] Checking previous messages...'
-    );
 
     const messages =
       await channel.messages.fetch({
         limit: 100
       });
 
-    const makkiMessages =
+    const matching =
       messages
-        .filter(message =>
-          message.author.bot &&
-          isMakkiMessage(message)
-        )
+        .filter(isMakkiMessage)
         .sort(
           (a, b) =>
             b.createdTimestamp -
@@ -479,38 +837,63 @@ async function cleanMakkiOnStartup(
         );
 
     console.log(
-      `[CLEANMAKKI] Found ${makkiMessages.size} matching message(s).`
+      `[CLEANMAKKI] Found ${matching.size} matching Makki message(s).`
     );
 
-    let first = true;
+    let newest = null;
 
-    for (const message of makkiMessages.values()) {
-      if (first) {
-        lastMakkiMessage = message;
-        first = false;
+    for (
+      const message
+      of matching.values()
+    ) {
+
+      if (!newest) {
+        newest = message;
       }
 
       const age =
         Date.now() -
         message.createdTimestamp;
 
-      const remainingDelay =
+      const remaining =
         Math.max(
           DELETE_DELAY - age,
           0
         );
 
-      scheduleMakkiDeletion(
-        message,
-        remainingDelay
+      console.log(
+        `[CLEANMAKKI] Message ${message.id} | Age: ${Math.floor(
+          age / 60000
+        )} minute(s)`
       );
+
+      if (
+        remaining <= 0
+      ) {
+
+        await deleteMakkiMessage(
+          message,
+          'startup expired timer'
+        );
+
+      } else {
+
+        scheduleMakkiDeletion(
+          message,
+          remaining
+        );
+      }
     }
 
+    lastMakkiMessage =
+      newest;
+
     console.log(
-      '[CLEANMAKKI] Startup scan complete ✅'
+      '[CLEANMAKKI] Startup scan finished ✅'
     );
 
   } catch (error) {
+
     console.error(
       '[CLEANMAKKI STARTUP ERROR]',
       error
@@ -519,87 +902,194 @@ async function cleanMakkiOnStartup(
 }
 
 // ======================================================
-// BOT READY
+// MANUAL CLEAN MAKKI
 // ======================================================
 
-client.once('ready', async readyClient => {
-  console.log('');
-  console.log(
-    '======================================'
-  );
-
-  console.log(
-    `[BOT] Logged in as ${readyClient.user.tag} ✅`
-  );
-
-  console.log(
-    `[BOT] ID: ${readyClient.user.id}`
-  );
-
-  console.log(
-    `[BOT] Guilds: ${readyClient.guilds.cache.size}`
-  );
-
-  console.log(
-    '======================================'
-  );
-  console.log('');
-
-  await registerCommands();
+async function manualCleanMakki() {
 
   try {
-    readyClient.user.setPresence({
-      activities: [
-        {
-          name: 'Battlefield 6 🔥',
-          type: ActivityType.Playing
-        }
-      ],
-      status: 'dnd'
-    });
 
-    console.log(
-      '[BOT] Presence configured ✅'
-    );
-
-  } catch (error) {
-    console.error(
-      '[PRESENCE ERROR]',
-      error
-    );
-  }
-
-  try {
     const channel =
-      await readyClient.channels.fetch(
+      await client.channels.fetch(
         MAKKI_CHANNEL
       );
 
     if (
-      channel &&
-      channel.isTextBased()
+      !channel ||
+      !channel.isTextBased()
     ) {
-      console.log(
-        `[CLEANMAKKI] Channel found: ${channel.name} ✅`
-      );
 
-      await cleanMakkiOnStartup(
-        channel
-      );
-
-    } else {
-      console.warn(
-        '[CLEANMAKKI] Configured channel is not text based.'
+      throw new Error(
+        'Canal do Makki não encontrado.'
       );
     }
 
+    const messages =
+      await channel.messages.fetch({
+        limit: 100
+      });
+
+    const matching =
+      messages
+        .filter(isMakkiMessage)
+        .sort(
+          (a, b) =>
+            b.createdTimestamp -
+            a.createdTimestamp
+        );
+
+    const latest =
+      matching.first();
+
+    if (!latest) {
+
+      return {
+        deleted: false,
+        reason:
+          'Nenhuma mensagem automática do Makki encontrada.'
+      };
+    }
+
+    const deleted =
+      await deleteMakkiMessage(
+        latest,
+        'manual /cleanmakki'
+      );
+
+    return {
+      deleted,
+      messageId:
+        latest.id
+    };
+
   } catch (error) {
+
     console.error(
-      '[CLEANMAKKI] Channel fetch failed:',
-      error.message || error
+      '[CLEANMAKKI MANUAL ERROR]',
+      error
     );
+
+    return {
+      deleted: false,
+      reason:
+        error.message || String(error)
+    };
   }
-});
+}
+
+// ======================================================
+// READY
+// ======================================================
+
+client.once(
+  'ready',
+  async readyClient => {
+
+    console.log('');
+    console.log(
+      '======================================'
+    );
+
+    console.log(
+      `[BOT] Logged in as ${readyClient.user.tag} ✅`
+    );
+
+    console.log(
+      `[BOT] Bot ID: ${readyClient.user.id}`
+    );
+
+    console.log(
+      `[BOT] Guilds: ${readyClient.guilds.cache.size}`
+    );
+
+    console.log(
+      `[BOT] Gateway ping: ${readyClient.ws.ping}ms`
+    );
+
+    console.log(
+      '======================================'
+    );
+    console.log('');
+
+    // ------------------------------------
+    // Commands
+    // ------------------------------------
+
+    await registerCommands();
+
+    // ------------------------------------
+    // Presence
+    // ------------------------------------
+
+    try {
+
+      readyClient.user.setPresence({
+
+        activities: [
+          {
+            name:
+              'Battlefield 6 🔥',
+
+            type:
+              ActivityType.Playing
+          }
+        ],
+
+        status: 'dnd'
+      });
+
+      console.log(
+        '[BOT] Presence configured ✅'
+      );
+
+    } catch (error) {
+
+      console.error(
+        '[PRESENCE ERROR]',
+        error
+      );
+    }
+
+    // ------------------------------------
+    // Makki channel
+    // ------------------------------------
+
+    try {
+
+      const channel =
+        await readyClient.channels.fetch(
+          MAKKI_CHANNEL
+        );
+
+      if (
+        channel &&
+        channel.isTextBased()
+      ) {
+
+        console.log(
+          `[CLEANMAKKI] Channel found: ${channel.name} ✅`
+        );
+
+        await cleanMakkiOnStartup(
+          channel
+        );
+
+      } else {
+
+        console.warn(
+          '[CLEANMAKKI] Makki channel is not text-based.'
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        '[CLEANMAKKI] Could not fetch channel:',
+        error.message || error
+      );
+    }
+  }
+);
 
 // ======================================================
 // INTERACTIONS
@@ -618,102 +1108,362 @@ client.on(
     const command =
       interaction.commandName;
 
-    // /guardian
-    if (command === 'guardian') {
-      try {
+    console.log(
+      `[COMMAND] /${command} | User: ${interaction.user.tag}`
+    );
+
+    try {
+
+      // ==================================================
+      // /guardian
+      // ==================================================
+
+      if (
+        command === 'guardian'
+      ) {
+
         await interaction.deferReply({
-          ephemeral: true
+          flags:
+            MessageFlags.Ephemeral
         });
 
-        await connectVoice(
-          interaction.member
-        );
+        try {
 
-        await interaction.editReply(
-          '✅ Polaco Guardian conectado ao canal de voz.'
-        );
+          await connectVoice(
+            interaction.member
+          );
 
-      } catch (error) {
-        console.error(
-          '[GUARDIAN ERROR]',
-          error
-        );
+          await interaction.editReply(
+            '✅ Polaco Guardian conectado ao seu canal de voz.'
+          );
 
-        const message =
-          `❌ Falha ao conectar: ${
-            error.message || error
-          }`;
+        } catch (error) {
 
-        if (
-          interaction.deferred ||
-          interaction.replied
-        ) {
-          await interaction
-            .editReply(message)
-            .catch(() => {});
-        } else {
-          await interaction
-            .reply({
-              content: message,
-              ephemeral: true
-            })
-            .catch(() => {});
+          console.error(
+            '[GUARDIAN ERROR]',
+            error
+          );
+
+          await interaction.editReply(
+            `❌ Falha ao conectar ao canal de voz:\n\`${error.message || error}\``
+          );
         }
+
+        return;
       }
 
-      return;
-    }
+      // ==================================================
+      // /leave
+      // ==================================================
 
-    // /leave
-    if (command === 'leave') {
-      const connection =
-        getVoiceConnection(
-          interaction.guild.id
-        );
+      if (
+        command === 'leave'
+      ) {
 
-      if (connection) {
+        const connection =
+          getVoiceConnection(
+            interaction.guild.id
+          );
+
+        if (
+          !connection
+        ) {
+
+          await interaction.reply({
+            content:
+              '❌ Não estou conectado a nenhum canal de voz.',
+
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+          return;
+        }
+
         connection.destroy();
 
         console.log(
-          `[VOICE] Disconnected from guild ${interaction.guild.id}`
+          '[VOICE] Connection destroyed manually.'
         );
 
         await interaction.reply({
           content:
             '👋 Desconectado do canal de voz.',
-          ephemeral: true
+
+          flags:
+            MessageFlags.Ephemeral
         });
 
-      } else {
-        await interaction.reply({
-          content:
-            '❌ Não estou conectado a nenhum canal de voz.',
-          ephemeral: true
-        });
+        return;
       }
 
-      return;
-    }
+      // ==================================================
+      // /polaco
+      // ==================================================
 
-    // /polaco
-    if (command === 'polaco') {
-      await interaction.reply(
-        'Polaco Guardian está ativo! ✅'
+      if (
+        command === 'polaco'
+      ) {
+
+        await interaction.reply(
+          'Polaco Guardian está ativo! ✅'
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /ping
+      // ==================================================
+
+      if (
+        command === 'ping'
+      ) {
+
+        const start =
+          Date.now();
+
+        await interaction.reply(
+          '🏓 Pong!'
+        );
+
+        const interactionPing =
+          Date.now() - start;
+
+        const gatewayPing =
+          Math.round(
+            client.ws.ping
+          );
+
+        await interaction.editReply(
+          `🏓 **Pong!**\n` +
+          `🤖 Bot: **${interactionPing}ms**\n` +
+          `🌐 Discord Gateway: **${gatewayPing}ms**`
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /dk
+      // ==================================================
+
+      if (
+        command === 'dk'
+      ) {
+
+        const guild =
+          interaction.guild;
+
+        if (!guild) {
+
+          await interaction.reply({
+            content:
+              '❌ Esse comando precisa ser usado dentro de um servidor.',
+
+            flags:
+              MessageFlags.Ephemeral
+          });
+
+          return;
+        }
+
+        await interaction.reply(
+          `🏰 **${guild.name}**\n` +
+          `👥 Membros: **${guild.memberCount}**\n` +
+          `🆔 Servidor: \`${guild.id}\`\n` +
+          `👑 Dono: <@${guild.ownerId}>`
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /avatar
+      // ==================================================
+
+      if (
+        command === 'avatar'
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            'usuario'
+          ) ||
+          interaction.user;
+
+        const avatar =
+          user.displayAvatarURL({
+            size: 1024,
+            extension: 'png'
+          });
+
+        await interaction.reply(
+          `🖼️ **Avatar de ${user.username}:**\n${avatar}`
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /userinfo
+      // ==================================================
+
+      if (
+        command === 'userinfo'
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            'usuario'
+          ) ||
+          interaction.user;
+
+        let member = null;
+
+        try {
+
+          member =
+            await interaction.guild.members.fetch(
+              user.id
+            );
+
+        } catch {}
+
+        const created =
+          Math.floor(
+            user.createdTimestamp / 1000
+          );
+
+        const joined =
+          member?.joinedTimestamp
+            ? Math.floor(
+                member.joinedTimestamp /
+                  1000
+              )
+            : null;
+
+        let response =
+          `👤 **Informações de ${user.username}**\n` +
+          `🆔 ID: \`${user.id}\`\n` +
+          `🤖 Bot: **${user.bot ? 'Sim' : 'Não'}**\n` +
+          `📅 Conta criada: <t:${created}:F>`;
+
+        if (joined) {
+
+          response +=
+            `\n📥 Entrou no servidor: <t:${joined}:F>`;
+        }
+
+        await interaction.reply(
+          response
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /falar
+      // /say
+      // ==================================================
+
+      if (
+        command === 'falar' ||
+        command === 'say'
+      ) {
+
+        const text =
+          interaction.options.getString(
+            'texto',
+            true
+          );
+
+        await interaction.reply({
+          content:
+            '✅ Mensagem enviada.',
+
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        await interaction.channel.send(
+          text
+        );
+
+        return;
+      }
+
+      // ==================================================
+      // /cleanmakki
+      // ==================================================
+
+      if (
+        command === 'cleanmakki'
+      ) {
+
+        await interaction.deferReply({
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        const result =
+          await manualCleanMakki();
+
+        if (
+          result.deleted
+        ) {
+
+          await interaction.editReply(
+            `✅ Última mensagem automática do Makki removida.\nID: \`${result.messageId}\``
+          );
+
+        } else {
+
+          await interaction.editReply(
+            `ℹ️ ${result.reason || 'Nenhuma mensagem foi removida.'}`
+          );
+        }
+
+        return;
+      }
+
+      // ==================================================
+      // UNKNOWN
+      // ==================================================
+
+      console.warn(
+        `[COMMAND] Unknown command: /${command}`
       );
 
-      return;
-    }
+    } catch (error) {
 
-    // /dk
-    if (command === 'dk') {
-      const guild =
-        interaction.guild;
-
-      await interaction.reply(
-        `Servidor: ${guild.name} | ID: ${guild.id} | Membros: ${guild.memberCount}`
+      console.error(
+        `[COMMAND ERROR] /${command}`,
+        error
       );
 
-      return;
+      const text =
+        `❌ Ocorreu um erro ao executar **/${command}**.\n\`${error.message || error}\``;
+
+      if (
+        interaction.deferred ||
+        interaction.replied
+      ) {
+
+        await interaction
+          .editReply(text)
+          .catch(() => {});
+
+      } else {
+
+        await interaction
+          .reply({
+            content: text,
+            flags:
+              MessageFlags.Ephemeral
+          })
+          .catch(() => {});
+      }
     }
   }
 );
@@ -726,6 +1476,7 @@ client.on(
   'messageCreate',
   async message => {
 
+    // Só nos interessa o canal do Makki
     if (
       message.channel.id !==
       MAKKI_CHANNEL
@@ -733,38 +1484,48 @@ client.on(
       return;
     }
 
+    // Log somente das mensagens do Makki
     if (
-      !message.author.bot ||
+      message.author.id ===
+      MAKKI_ID
+    ) {
+
+      console.log('');
+      console.log(
+        `[CLEANMAKKI] Makki message received | ID: ${message.id}`
+      );
+
+      console.log(
+        `[CLEANMAKKI] Content length: ${
+          message.content?.length || 0
+        }`
+      );
+
+      console.log(
+        `[CLEANMAKKI] Embeds: ${message.embeds.length}`
+      );
+    }
+
+    if (
       !isMakkiMessage(message)
     ) {
+
+      if (
+        message.author.id ===
+        MAKKI_ID
+      ) {
+
+        console.log(
+          '[CLEANMAKKI] Makki message ignored: not the automatic target message.'
+        );
+      }
+
       return;
     }
 
     console.log(
-      `[CLEANMAKKI] New Makki message detected ✅ | ID: ${message.id}`
+      '[CLEANMAKKI] Automatic Makki message detected ✅'
     );
-
-    if (
-      lastMakkiMessage &&
-      lastMakkiMessage.id !==
-        message.id
-    ) {
-      try {
-        await lastMakkiMessage.delete();
-
-        console.log(
-          '[CLEANMAKKI] Previous Makki message deleted ✅'
-        );
-
-      } catch (error) {
-        if (error?.code !== 10008) {
-          console.error(
-            '[CLEANMAKKI] Could not delete previous message:',
-            error.message || error
-          );
-        }
-      }
-    }
 
     lastMakkiMessage =
       message;
@@ -777,12 +1538,119 @@ client.on(
 );
 
 // ======================================================
-// PROCESS ERROR LOGGING
+// DISCORD REST PREFLIGHT
+// ======================================================
+
+async function discordPreflight() {
+
+  console.log(
+    '[STARTUP] Testing Discord REST API...'
+  );
+
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () => controller.abort(),
+      15000
+    );
+
+  try {
+
+    const response =
+      await fetch(
+        'https://discord.com/api/v10/users/@me',
+        {
+          headers: {
+            Authorization:
+              `Bot ${TOKEN}`
+          },
+
+          signal:
+            controller.signal
+        }
+      );
+
+    console.log(
+      `[STARTUP] Discord REST HTTP ${response.status}`
+    );
+
+    if (
+      response.status === 429
+    ) {
+
+      const body =
+        await response.text();
+
+      if (
+        body.includes('1015') ||
+        body.includes(
+          'temporarily'
+        )
+      ) {
+
+        throw new Error(
+          'Discord/Cloudflare bloqueou temporariamente o IP de saída do Render (HTTP 429 / Error 1015).'
+        );
+      }
+
+      throw new Error(
+        'Discord respondeu HTTP 429 (rate limit).'
+      );
+    }
+
+    if (
+      response.status === 401
+    ) {
+
+      throw new Error(
+        'TOKEN inválido ou expirado (HTTP 401).'
+      );
+    }
+
+    if (!response.ok) {
+
+      throw new Error(
+        `Discord REST retornou HTTP ${response.status}.`
+      );
+    }
+
+    const bot =
+      await response.json();
+
+    console.log(
+      `[STARTUP] Authenticated as ${bot.username} (${bot.id}) ✅`
+    );
+
+    if (
+      String(bot.id) !==
+      String(CLIENT_ID)
+    ) {
+
+      throw new Error(
+        `CLIENT_ID não pertence ao TOKEN informado. Token ID=${bot.id}, CLIENT_ID=${CLIENT_ID}`
+      );
+    }
+
+    console.log(
+      '[STARTUP] TOKEN + CLIENT_ID OK ✅'
+    );
+
+  } finally {
+
+    clearTimeout(timer);
+  }
+}
+
+// ======================================================
+// PROCESS ERRORS
 // ======================================================
 
 process.on(
   'unhandledRejection',
   error => {
+
     console.error(
       '[UNHANDLED REJECTION]',
       error
@@ -793,6 +1661,7 @@ process.on(
 process.on(
   'uncaughtException',
   error => {
+
     console.error(
       '[UNCAUGHT EXCEPTION]',
       error
@@ -805,9 +1674,18 @@ process.on(
 // ======================================================
 
 function shutdown(signal) {
+
   console.log(
-    `[SYSTEM] ${signal} received. Shutting down...`
+    `[SYSTEM] ${signal} received.`
   );
+
+  for (
+    const timer
+    of makkiTimers.values()
+  ) {
+
+    clearTimeout(timer);
+  }
 
   try {
     client.destroy();
@@ -831,128 +1709,13 @@ process.on(
 );
 
 // ======================================================
-// DISCORD REST TEST
-// ======================================================
-
-async function testDiscordRest() {
-  console.log(
-    '[STARTUP] Testing Discord REST authentication...'
-  );
-
-  const response = await fetch(
-    'https://discord.com/api/v10/users/@me',
-    {
-      headers: {
-        Authorization: `Bot ${TOKEN}`
-      }
-    }
-  );
-
-  console.log(
-    `[REST TEST] HTTP ${response.status}`
-  );
-
-  if (!response.ok) {
-    const body =
-      await response.text();
-
-    console.error(
-      '[REST TEST] Discord response:',
-      body
-    );
-
-    throw new Error(
-      `Discord authentication failed: HTTP ${response.status}`
-    );
-  }
-
-  const botInfo =
-    await response.json();
-
-  console.log(
-    `[REST TEST] Authenticated as ${botInfo.username} (${botInfo.id}) ✅`
-  );
-
-  if (
-    String(botInfo.id) !==
-    String(CLIENT_ID)
-  ) {
-    console.warn(
-      '[REST TEST WARNING] CLIENT_ID does not match the bot token!'
-    );
-
-    console.warn(
-      `[REST TEST WARNING] TOKEN bot ID: ${botInfo.id}`
-    );
-
-    console.warn(
-      `[REST TEST WARNING] CLIENT_ID: ${CLIENT_ID}`
-    );
-  } else {
-    console.log(
-      '[REST TEST] TOKEN and CLIENT_ID match ✅'
-    );
-  }
-}
-
-// ======================================================
-// DISCORD GATEWAY REST TEST
-// ======================================================
-
-async function testDiscordGatewayEndpoint() {
-  console.log(
-    '[STARTUP] Testing Discord Gateway endpoint...'
-  );
-
-  const response = await fetch(
-    'https://discord.com/api/v10/gateway/bot',
-    {
-      headers: {
-        Authorization: `Bot ${TOKEN}`
-      }
-    }
-  );
-
-  console.log(
-    `[GATEWAY TEST] HTTP ${response.status}`
-  );
-
-  if (!response.ok) {
-    const body =
-      await response.text();
-
-    console.error(
-      '[GATEWAY TEST] Discord response:',
-      body
-    );
-
-    throw new Error(
-      `Discord Gateway endpoint failed: HTTP ${response.status}`
-    );
-  }
-
-  const gatewayInfo =
-    await response.json();
-
-  console.log(
-    `[GATEWAY TEST] URL: ${gatewayInfo.url}`
-  );
-
-  console.log(
-    `[GATEWAY TEST] Recommended shards: ${gatewayInfo.shards}`
-  );
-
-  console.log(
-    '[GATEWAY TEST] Gateway information received ✅'
-  );
-}
-
-// ======================================================
-// START BOT
+// START
 // ======================================================
 
 async function startBot() {
+
   try {
+
     console.log('');
     console.log(
       '======================================'
@@ -966,25 +1729,28 @@ async function startBot() {
       '======================================'
     );
 
-    // ==================================================
-    // CHECK ENVIRONMENT
-    // ==================================================
+    // ------------------------------------
+    // ENV
+    // ------------------------------------
 
     if (!TOKEN) {
+
       throw new Error(
-        'TOKEN não encontrado nas variáveis de ambiente.'
+        'TOKEN não configurado.'
       );
     }
 
     if (!CLIENT_ID) {
+
       throw new Error(
-        'CLIENT_ID não encontrado nas variáveis de ambiente.'
+        'CLIENT_ID não configurado.'
       );
     }
 
     if (!GUILD_ID) {
+
       throw new Error(
-        'GUILD_ID não encontrado nas variáveis de ambiente.'
+        'GUILD_ID não configurado.'
       );
     }
 
@@ -1000,13 +1766,9 @@ async function startBot() {
       `[STARTUP] GUILD_ID: ${GUILD_ID}`
     );
 
-    console.log(
-      `[STARTUP] TOKEN present: YES (${TOKEN.length} characters)`
-    );
-
-    // ==================================================
-    // LIBSODIUM
-    // ==================================================
+    // ------------------------------------
+    // Sodium
+    // ------------------------------------
 
     console.log(
       '[STARTUP] Initializing libsodium...'
@@ -1018,66 +1780,61 @@ async function startBot() {
       '[STARTUP] libsodium ready ✅'
     );
 
-    // ==================================================
-    // TEST 1 - DISCORD REST
-    // ==================================================
+    // ------------------------------------
+    // Discord REST preflight
+    // ------------------------------------
 
-    await testDiscordRest();
+    await discordPreflight();
 
-    // ==================================================
-    // TEST 2 - GATEWAY REST ENDPOINT
-    // ==================================================
-
-    await testDiscordGatewayEndpoint();
-
-    // ==================================================
-    // LOGIN / WEBSOCKET
-    // ==================================================
+    // ------------------------------------
+    // Gateway
+    // ------------------------------------
 
     console.log(
-      '[STARTUP] Opening Discord Gateway/WebSocket connection...'
+      '[STARTUP] Connecting to Discord Gateway...'
     );
 
     const LOGIN_TIMEOUT =
       45_000;
 
-    let timeoutId;
+    let timeout;
 
     const timeoutPromise =
-      new Promise((_, reject) => {
-        timeoutId =
-          setTimeout(() => {
-            reject(
-              new Error(
-                `Discord Gateway login timeout after ${LOGIN_TIMEOUT / 1000} seconds`
-              )
+      new Promise(
+        (_, reject) => {
+
+          timeout =
+            setTimeout(
+              () => {
+
+                reject(
+                  new Error(
+                    `Discord Gateway login timeout after ${
+                      LOGIN_TIMEOUT /
+                      1000
+                    } seconds.`
+                  )
+                );
+
+              },
+              LOGIN_TIMEOUT
             );
-          }, LOGIN_TIMEOUT);
-      });
-
-    try {
-      const loginResult =
-        await Promise.race([
-          client.login(TOKEN),
-          timeoutPromise
-        ]);
-
-      clearTimeout(timeoutId);
-
-      console.log(
-        '[STARTUP] client.login() completed ✅'
+        }
       );
 
-      console.log(
-        `[STARTUP] Login result: ${loginResult}`
-      );
+    await Promise.race([
+      client.login(TOKEN),
+      timeoutPromise
+    ]);
 
-    } catch (error) {
-      clearTimeout(timeoutId);
-      throw error;
-    }
+    clearTimeout(timeout);
+
+    console.log(
+      '[STARTUP] Discord login completed ✅'
+    );
 
   } catch (error) {
+
     console.error('');
     console.error(
       '======================================'
@@ -1087,7 +1844,9 @@ async function startBot() {
       '[STARTUP ERROR]'
     );
 
-    console.error(error);
+    console.error(
+      error.message || error
+    );
 
     console.error(
       '======================================'
@@ -1097,14 +1856,11 @@ async function startBot() {
       client.destroy();
     } catch {}
 
-    setTimeout(() => {
-      process.exit(1);
-    }, 3000);
+    setTimeout(
+      () => process.exit(1),
+      3000
+    );
   }
 }
-
-// ======================================================
-// START
-// ======================================================
 
 startBot();
